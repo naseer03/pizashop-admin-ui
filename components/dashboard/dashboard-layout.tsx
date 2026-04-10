@@ -3,6 +3,7 @@
 import { useState } from "react"
 import { Sidebar } from "./sidebar"
 import { Header } from "./header"
+import { Toaster } from "@/components/ui/toaster"
 import { cn } from "@/lib/utils"
 
 interface DashboardLayoutProps {
@@ -46,6 +47,7 @@ export function DashboardLayout({ children }: DashboardLayoutProps) {
         <Header onMenuClick={() => setMobileMenuOpen(!mobileMenuOpen)} />
         <main className="p-4 md:p-6">{children}</main>
       </div>
+      <Toaster />
     </div>
   )
 }

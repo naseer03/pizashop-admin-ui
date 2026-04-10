@@ -1,6 +1,6 @@
 "use client"
 
-import { useState } from "react"
+import { useCallback, useEffect, useMemo, useState } from "react"
 import { DashboardLayout } from "@/components/dashboard/dashboard-layout"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
@@ -24,18 +24,38 @@ import {
   DialogFooter,
 } from "@/components/ui/dialog"
 import {
+  AlertDialog,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog"
+import {
   Select,
   SelectContent,
   SelectItem,
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select"
-import { Search, Plus, Pencil, AlertTriangle, Package } from "lucide-react"
+import { Search, Plus, Pencil, AlertTriangle, Package, Trash2 } from "lucide-react"
 import { Field, FieldGroup, FieldLabel } from "@/components/ui/field"
 import { cn } from "@/lib/utils"
+import { Spinner } from "@/components/ui/spinner"
+import { toast } from "@/hooks/use-toast"
+import { isUnauthorizedApiError } from "@/lib/api/client"
+import {
+  apiCreateInventory,
+  apiDeleteInventory,
+  apiListInventory,
+  apiUpdateInventory,
+  type ApiInventoryItem,
+} from "@/lib/api/inventory"
+import { apiListCategories } from "@/lib/api/menu"
 
 interface InventoryItem {
-  id: string
+  id: number
   name: string
   stock: number
   unit: string
@@ -44,116 +64,86 @@ interface InventoryItem {
   lastRestocked: string
 }
 
-const initialInventory: InventoryItem[] = [
-  {
-    id: "1",
-    name: "Mozzarella Cheese",
-    stock: 5,
-    unit: "kg",
-    reorderLevel: 10,
-    category: "dairy",
-    lastRestocked: "2024-01-15",
-  },
-  {
-    id: "2",
-    name: "Pizza Dough",
-    stock: 45,
-    unit: "pieces",
-    reorderLevel: 20,
-    category: "dough",
-    lastRestocked: "2024-01-18",
-  },
-  {
-    id: "3",
-    name: "Tomato Sauce",
-    stock: 8,
-    unit: "liters",
-    reorderLevel: 15,
-    category: "sauces",
-    lastRestocked: "2024-01-16",
-  },
-  {
-    id: "4",
-    name: "Pepperoni",
-    stock: 3,
-    unit: "kg",
-    reorderLevel: 5,
-    category: "toppings",
-    lastRestocked: "2024-01-14",
-  },
-  {
-    id: "5",
-    name: "Fresh Basil",
-    stock: 0.5,
-    unit: "kg",
-    reorderLevel: 1,
-    category: "vegetables",
-    lastRestocked: "2024-01-17",
-  },
-  {
-    id: "6",
-    name: "Olive Oil",
-    stock: 12,
-    unit: "liters",
-    reorderLevel: 5,
-    category: "oils",
-    lastRestocked: "2024-01-10",
-  },
-  {
-    id: "7",
-    name: "Bell Peppers",
-    stock: 4,
-    unit: "kg",
-    reorderLevel: 3,
-    category: "vegetables",
-    lastRestocked: "2024-01-18",
-  },
-  {
-    id: "8",
-    name: "Mushrooms",
-    stock: 2.5,
-    unit: "kg",
-    reorderLevel: 4,
-    category: "vegetables",
-    lastRestocked: "2024-01-17",
-  },
-  {
-    id: "9",
-    name: "Italian Sausage",
-    stock: 6,
-    unit: "kg",
-    reorderLevel: 4,
-    category: "toppings",
-    lastRestocked: "2024-01-15",
-  },
-  {
-    id: "10",
-    name: "Parmesan Cheese",
-    stock: 3,
-    unit: "kg",
-    reorderLevel: 2,
-    category: "dairy",
-    lastRestocked: "2024-01-16",
-  },
-]
+const defaultUnits = ["kg", "liters", "pieces", "boxes"]
+const fallbackCategories = ["dairy", "dough", "sauces", "toppings", "vegetables", "oils"]
 
-const categories = [
-  { value: "all", label: "All Categories" },
-  { value: "dairy", label: "Dairy" },
-  { value: "dough", label: "Dough" },
-  { value: "sauces", label: "Sauces" },
-  { value: "toppings", label: "Toppings" },
-  { value: "vegetables", label: "Vegetables" },
-  { value: "oils", label: "Oils" },
-]
+function toNumber(v: unknown): number | null {
+  if (typeof v === "number" && Number.isFinite(v)) return v
+  if (typeof v === "string" && v.trim().length > 0) {
+    const n = Number(v)
+    if (Number.isFinite(n)) return n
+  }
+  return null
+}
+
+function mapInventoryItem(raw: ApiInventoryItem): InventoryItem | null {
+  const id = toNumber(raw.id)
+  if (id == null) return null
+  const stock = toNumber(raw.current_stock) ?? 0
+  const reorder = toNumber(raw.reorder_level) ?? toNumber(raw.min_stock_level) ?? 0
+  return {
+    id,
+    name: raw.name?.trim() || `Item #${id}`,
+    stock,
+    unit: raw.unit?.trim() || "pieces",
+    reorderLevel: reorder,
+    category: raw.category?.trim() || "other",
+    lastRestocked: (raw.updated_at || raw.created_at || "").slice(0, 10),
+  }
+}
+
+function normalizeUnitCandidates(unit: string): string[] {
+  const u = unit.trim().toLowerCase()
+  const variants = new Set<string>([u, unit.trim()])
+  if (u === "kg") {
+    variants.add("kilogram")
+    variants.add("kilograms")
+  }
+  if (u === "liters" || u === "liter" || u === "l") {
+    variants.add("liter")
+    variants.add("liters")
+  }
+  if (u === "pieces" || u === "piece" || u === "pcs") {
+    variants.add("piece")
+    variants.add("pieces")
+  }
+  if (u === "boxes" || u === "box") {
+    variants.add("box")
+    variants.add("boxes")
+  }
+  return Array.from(variants)
+}
+
+function normalizeCategoryCandidates(rawCategory: string, mappedCategory: string): string[] {
+  const original = rawCategory.trim()
+  const mapped = mappedCategory.trim()
+  const variants = new Set<string>([
+    original,
+    mapped,
+    original.toLowerCase(),
+    mapped.toLowerCase(),
+    original.toLowerCase().replace(/\s+/g, "_"),
+    original.toLowerCase().replace(/\s+/g, "-"),
+  ])
+  return Array.from(variants).filter(Boolean)
+}
 
 export default function InventoryPage() {
-  const [inventory, setInventory] = useState<InventoryItem[]>(initialInventory)
+  const [inventory, setInventory] = useState<InventoryItem[]>([])
+  const [categoryNames, setCategoryNames] = useState<string[]>([])
+  const [categoryValueByName, setCategoryValueByName] = useState<Record<string, string>>({})
+  const [loading, setLoading] = useState(true)
+  const [loadError, setLoadError] = useState<string | null>(null)
+  const [saving, setSaving] = useState(false)
+  const [actionError, setActionError] = useState<string | null>(null)
+
   const [searchQuery, setSearchQuery] = useState("")
   const [categoryFilter, setCategoryFilter] = useState("all")
   const [showLowStock, setShowLowStock] = useState(false)
   const [isAddDialogOpen, setIsAddDialogOpen] = useState(false)
   const [editingItem, setEditingItem] = useState<InventoryItem | null>(null)
+  const [deleteTarget, setDeleteTarget] = useState<InventoryItem | null>(null)
+  const [deletePending, setDeletePending] = useState(false)
   const [formData, setFormData] = useState({
     name: "",
     stock: "",
@@ -162,6 +152,48 @@ export default function InventoryPage() {
     category: "toppings",
   })
 
+  const refresh = useCallback(async () => {
+    setLoading(true)
+    setLoadError(null)
+    const [invRes, catRes] = await Promise.all([
+      apiListInventory({ per_page: 100 }),
+      apiListCategories(),
+    ])
+
+    if (!invRes.ok) {
+      if (!isUnauthorizedApiError(invRes)) setLoadError(invRes.message)
+      setLoading(false)
+      return
+    }
+
+    if (!catRes.ok) {
+      if (!isUnauthorizedApiError(catRes)) setLoadError(catRes.message)
+      setLoading(false)
+      return
+    }
+
+    const names = catRes.data
+      .map((c) => c.name?.trim())
+      .filter((name): name is string => Boolean(name))
+    const categoryMap: Record<string, string> = {}
+    for (const c of catRes.data) {
+      const name = c.name?.trim()
+      if (!name) continue
+      const slug = c.slug?.trim()
+      const apiValue = slug && slug.length > 0 ? slug : name.toLowerCase().replace(/\s+/g, "_")
+      categoryMap[name] = apiValue
+      categoryMap[apiValue] = apiValue
+    }
+    setCategoryNames(names)
+    setCategoryValueByName(categoryMap)
+    setInventory(invRes.data.map(mapInventoryItem).filter((i): i is InventoryItem => i !== null))
+    setLoading(false)
+  }, [])
+
+  useEffect(() => {
+    void refresh()
+  }, [refresh])
+
   const filteredInventory = inventory.filter((item) => {
     const matchesSearch = item.name.toLowerCase().includes(searchQuery.toLowerCase())
     const matchesCategory = categoryFilter === "all" || item.category === categoryFilter
@@ -169,54 +201,155 @@ export default function InventoryPage() {
     return matchesSearch && matchesCategory && matchesLowStock
   })
 
+  const categories = useMemo(() => {
+    const source = categoryNames.length ? categoryNames : fallbackCategories
+    const set = new Set(source)
+    return [
+      { value: "all", label: "All Categories" },
+      ...Array.from(set).sort().map((c) => ({ value: c, label: c[0].toUpperCase() + c.slice(1) })),
+    ]
+  }, [categoryNames])
+
+  const units = useMemo(() => {
+    const set = new Set([...defaultUnits, ...inventory.map((i) => i.unit).filter(Boolean)])
+    return Array.from(set)
+  }, [inventory])
+
   const lowStockCount = inventory.filter((item) => item.stock <= item.reorderLevel).length
 
-  const handleAddItem = () => {
-    const newItem: InventoryItem = {
-      id: Date.now().toString(),
-      name: formData.name,
-      stock: parseFloat(formData.stock),
-      unit: formData.unit,
-      reorderLevel: parseFloat(formData.reorderLevel),
-      category: formData.category,
-      lastRestocked: new Date().toISOString().split("T")[0],
+  const handleAddItem = async () => {
+    const name = formData.name.trim()
+    const stock = Number(formData.stock)
+    const reorder = Number(formData.reorderLevel)
+    if (!name || !Number.isFinite(stock) || !Number.isFinite(reorder) || !formData.category.trim()) {
+      setActionError("Name, stock, reorder level and category are required.")
+      return
     }
-    setInventory([...inventory, newItem])
+    setActionError(null)
+    setSaving(true)
+    const categoryApiValue =
+      categoryValueByName[formData.category.trim()] ??
+      formData.category.trim().toLowerCase().replace(/\s+/g, "_")
+
+    let createOk = false
+    let lastMessage = "Unable to create inventory item."
+    const categoryCandidates = normalizeCategoryCandidates(formData.category, categoryApiValue)
+    const unitCandidates = normalizeUnitCandidates(formData.unit || "pieces")
+    for (const cat of categoryCandidates) {
+      for (const unit of unitCandidates) {
+        const res = await apiCreateInventory({
+          name,
+          category: cat,
+          unit,
+          current_stock: stock,
+          min_stock_level: reorder,
+          reorder_level: reorder,
+        })
+        if (res.ok) {
+          createOk = true
+          break
+        }
+        if (isUnauthorizedApiError(res)) {
+          setSaving(false)
+          return
+        }
+        lastMessage = res.message || lastMessage
+      }
+      if (createOk) break
+    }
+
+    setSaving(false)
+    if (!createOk) {
+      setActionError(lastMessage)
+      return
+    }
     setIsAddDialogOpen(false)
     resetForm()
+    await refresh()
+    toast({ title: "Saved", description: "Inventory item was created." })
   }
 
-  const handleEditItem = () => {
+  const handleEditItem = async () => {
     if (!editingItem) return
-    setInventory((items) =>
-      items.map((item) =>
-        item.id === editingItem.id
-          ? {
-              ...item,
-              name: formData.name,
-              stock: parseFloat(formData.stock),
-              unit: formData.unit,
-              reorderLevel: parseFloat(formData.reorderLevel),
-              category: formData.category,
-            }
-          : item
-      )
-    )
+    const name = formData.name.trim()
+    const stock = Number(formData.stock)
+    const reorder = Number(formData.reorderLevel)
+    if (!name || !Number.isFinite(stock) || !Number.isFinite(reorder) || !formData.category.trim()) {
+      setActionError("Name, stock, reorder level and category are required.")
+      return
+    }
+    setActionError(null)
+    setSaving(true)
+    const categoryApiValue =
+      categoryValueByName[formData.category.trim()] ??
+      formData.category.trim().toLowerCase().replace(/\s+/g, "_")
+
+    let updateOk = false
+    let lastMessage = "Unable to update inventory item."
+    const categoryCandidates = normalizeCategoryCandidates(formData.category, categoryApiValue)
+    const unitCandidates = normalizeUnitCandidates(formData.unit || "pieces")
+    for (const cat of categoryCandidates) {
+      for (const unit of unitCandidates) {
+        const res = await apiUpdateInventory(editingItem.id, {
+          name,
+          category: cat,
+          unit,
+          current_stock: stock,
+          min_stock_level: reorder,
+          reorder_level: reorder,
+        })
+        if (res.ok) {
+          updateOk = true
+          break
+        }
+        if (isUnauthorizedApiError(res)) {
+          setSaving(false)
+          return
+        }
+        lastMessage = res.message || lastMessage
+      }
+      if (updateOk) break
+    }
+
+    setSaving(false)
+    if (!updateOk) {
+      setActionError(lastMessage)
+      return
+    }
     setEditingItem(null)
     resetForm()
+    await refresh()
+    toast({ title: "Saved", description: "Inventory item was updated." })
+  }
+
+  const handleDeleteItem = async () => {
+    if (!deleteTarget) return
+    setDeletePending(true)
+    setActionError(null)
+    const res = await apiDeleteInventory(deleteTarget.id)
+    setDeletePending(false)
+    if (!res.ok) {
+      if (!isUnauthorizedApiError(res)) setActionError(res.message)
+      return
+    }
+    setDeleteTarget(null)
+    setInventory((prev) => prev.filter((i) => i.id !== deleteTarget.id))
+    toast({ title: "Deleted", description: "Inventory item was removed." })
   }
 
   const resetForm = () => {
+    setActionError(null)
     setFormData({
       name: "",
       stock: "",
       unit: "kg",
       reorderLevel: "",
-      category: "toppings",
+      category: categories[1]?.value || "other",
     })
   }
 
   const openEditDialog = (item: InventoryItem) => {
+    setActionError(null)
     setEditingItem(item)
     setFormData({
       name: item.name,
@@ -230,6 +363,33 @@ export default function InventoryPage() {
   return (
     <DashboardLayout>
       <div className="space-y-6">
+        <AlertDialog
+          open={deleteTarget !== null}
+          onOpenChange={(open) => {
+            if (!open && !deletePending) setDeleteTarget(null)
+          }}
+        >
+          <AlertDialogContent>
+            <AlertDialogHeader>
+              <AlertDialogTitle>Delete inventory item?</AlertDialogTitle>
+              <AlertDialogDescription>
+                This action cannot be undone.{" "}
+                <span className="font-medium">{deleteTarget?.name ?? "This item"}</span> will be removed.
+              </AlertDialogDescription>
+            </AlertDialogHeader>
+            <AlertDialogFooter>
+              <AlertDialogCancel disabled={deletePending}>Cancel</AlertDialogCancel>
+              <Button
+                variant="destructive"
+                disabled={deletePending}
+                onClick={() => void handleDeleteItem()}
+              >
+                {deletePending ? "Deleting..." : "Delete"}
+              </Button>
+            </AlertDialogFooter>
+          </AlertDialogContent>
+        </AlertDialog>
+
         {/* Page header */}
         <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
           <div>
@@ -238,7 +398,13 @@ export default function InventoryPage() {
               Track and manage your ingredient stock levels
             </p>
           </div>
-          <Dialog open={isAddDialogOpen} onOpenChange={setIsAddDialogOpen}>
+          <Dialog
+            open={isAddDialogOpen}
+            onOpenChange={(open) => {
+              setIsAddDialogOpen(open)
+              if (!open && !saving) resetForm()
+            }}
+          >
             <DialogTrigger asChild>
               <Button
                 className="bg-primary text-primary-foreground hover:bg-primary/90"
@@ -256,14 +422,24 @@ export default function InventoryPage() {
                 </DialogDescription>
               </DialogHeader>
               <InventoryForm
+                categories={categories.filter((c) => c.value !== "all")}
+                units={units}
                 formData={formData}
                 setFormData={setFormData}
                 onSubmit={handleAddItem}
                 submitLabel="Add Item"
+                submitting={saving}
+                actionError={actionError}
               />
             </DialogContent>
           </Dialog>
         </div>
+
+        {loadError && (
+          <Card className="border-destructive/40">
+            <CardContent className="pt-6 text-sm text-destructive">{loadError}</CardContent>
+          </Card>
+        )}
 
         {/* Stats */}
         <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
@@ -352,6 +528,14 @@ export default function InventoryPage() {
             </CardTitle>
           </CardHeader>
           <CardContent>
+            {loading ? (
+              <div className="flex items-center gap-3 py-8 text-muted-foreground">
+                <Spinner className="h-4 w-4" />
+                Loading inventory...
+              </div>
+            ) : filteredInventory.length === 0 ? (
+              <div className="py-8 text-sm text-muted-foreground">No inventory items found.</div>
+            ) : (
             <Table>
               <TableHeader>
                 <TableRow>
@@ -424,19 +608,33 @@ export default function InventoryPage() {
                               </DialogDescription>
                             </DialogHeader>
                             <InventoryForm
+                              categories={categories.filter((c) => c.value !== "all")}
+                              units={units}
                               formData={formData}
                               setFormData={setFormData}
                               onSubmit={handleEditItem}
                               submitLabel="Save Changes"
+                              submitting={saving}
+                              actionError={actionError}
                             />
                           </DialogContent>
                         </Dialog>
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          className="h-8 w-8 text-destructive hover:text-destructive"
+                          onClick={() => setDeleteTarget(item)}
+                          disabled={deletePending || saving}
+                        >
+                          <Trash2 className="h-4 w-4" />
+                        </Button>
                       </TableCell>
                     </TableRow>
                   )
                 })}
               </TableBody>
             </Table>
+            )}
           </CardContent>
         </Card>
       </div>
@@ -445,11 +643,17 @@ export default function InventoryPage() {
 }
 
 function InventoryForm({
+  categories,
+  units,
   formData,
   setFormData,
   onSubmit,
   submitLabel,
+  submitting,
+  actionError,
 }: {
+  categories: Array<{ value: string; label: string }>
+  units: string[]
   formData: {
     name: string
     stock: string
@@ -466,8 +670,10 @@ function InventoryForm({
       category: string
     }>
   >
-  onSubmit: () => void
+  onSubmit: () => Promise<void> | void
   submitLabel: string
+  submitting: boolean
+  actionError: string | null
 }) {
   return (
     <FieldGroup className="mt-4">
@@ -502,10 +708,11 @@ function InventoryForm({
               <SelectValue />
             </SelectTrigger>
             <SelectContent>
-              <SelectItem value="kg">Kilograms (kg)</SelectItem>
-              <SelectItem value="liters">Liters</SelectItem>
-              <SelectItem value="pieces">Pieces</SelectItem>
-              <SelectItem value="boxes">Boxes</SelectItem>
+            {units.map((unit) => (
+              <SelectItem key={unit} value={unit}>
+                {unit}
+              </SelectItem>
+            ))}
             </SelectContent>
           </Select>
         </Field>
@@ -531,18 +738,18 @@ function InventoryForm({
             <SelectValue />
           </SelectTrigger>
           <SelectContent>
-            <SelectItem value="dairy">Dairy</SelectItem>
-            <SelectItem value="dough">Dough</SelectItem>
-            <SelectItem value="sauces">Sauces</SelectItem>
-            <SelectItem value="toppings">Toppings</SelectItem>
-            <SelectItem value="vegetables">Vegetables</SelectItem>
-            <SelectItem value="oils">Oils</SelectItem>
+            {categories.map((category) => (
+              <SelectItem key={category.value} value={category.value}>
+                {category.label}
+              </SelectItem>
+            ))}
           </SelectContent>
         </Select>
       </Field>
+      {actionError && <p className="text-sm text-destructive">{actionError}</p>}
       <DialogFooter className="mt-4">
-        <Button onClick={onSubmit} className="w-full">
-          {submitLabel}
+        <Button onClick={onSubmit} className="w-full" disabled={submitting}>
+          {submitting ? "Saving..." : submitLabel}
         </Button>
       </DialogFooter>
     </FieldGroup>

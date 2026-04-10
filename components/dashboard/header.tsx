@@ -1,7 +1,10 @@
 "use client"
 
 import { Bell, Search, ChevronDown, Menu } from "lucide-react"
+import { useRouter } from "next/navigation"
 import { Button } from "@/components/ui/button"
+import { clearDummySession, getAccessToken } from "@/lib/auth"
+import { logoutRequest } from "@/lib/api/auth"
 import { Input } from "@/components/ui/input"
 import {
   DropdownMenu,
@@ -19,6 +22,17 @@ interface HeaderProps {
 }
 
 export function Header({ onMenuClick }: HeaderProps) {
+  const router = useRouter()
+
+  function handleLogout() {
+    void (async () => {
+      await logoutRequest(getAccessToken() ?? undefined)
+      clearDummySession()
+      router.push("/login")
+      router.refresh()
+    })()
+  }
+
   return (
     <header className="sticky top-0 z-30 flex h-16 items-center justify-between gap-4 border-b border-border bg-card px-4 md:px-6">
       {/* Mobile menu button */}
@@ -96,7 +110,10 @@ export function Header({ onMenuClick }: HeaderProps) {
             <DropdownMenuItem>Profile</DropdownMenuItem>
             <DropdownMenuItem>Settings</DropdownMenuItem>
             <DropdownMenuSeparator />
-            <DropdownMenuItem className="text-destructive">
+            <DropdownMenuItem
+              className="text-destructive"
+              onSelect={() => handleLogout()}
+            >
               Log out
             </DropdownMenuItem>
           </DropdownMenuContent>

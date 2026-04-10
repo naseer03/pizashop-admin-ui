@@ -1,6 +1,6 @@
 "use client"
 
-import { useState } from "react"
+import { useCallback, useEffect, useMemo, useState } from "react"
 import { DashboardLayout } from "@/components/dashboard/dashboard-layout"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
@@ -24,6 +24,15 @@ import {
   DialogFooter,
 } from "@/components/ui/dialog"
 import {
+  AlertDialog,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog"
+import {
   Select,
   SelectContent,
   SelectItem,
@@ -33,180 +42,299 @@ import {
 import { Avatar, AvatarFallback } from "@/components/ui/avatar"
 import { Search, Plus, Pencil, Trash2, Users, UserCheck, UserX } from "lucide-react"
 import { Field, FieldGroup, FieldLabel } from "@/components/ui/field"
+import { Spinner } from "@/components/ui/spinner"
+import { toast } from "@/hooks/use-toast"
+import { isUnauthorizedApiError } from "@/lib/api/client"
+import {
+  apiCreateEmployee,
+  apiDeleteEmployee,
+  apiListEmployees,
+  apiPatchEmployeeStatus,
+  apiUpdateEmployee,
+  type ApiEmployee,
+} from "@/lib/api/employees"
+import { apiListRoles, type ApiRole } from "@/lib/api/roles"
 
 interface Employee {
-  id: string
+  id: number
   name: string
   email: string
-  role: string
+  roleId: number
+  roleName: string
   status: "active" | "inactive"
   phone: string
   joinDate: string
 }
 
-const initialEmployees: Employee[] = [
-  {
-    id: "1",
-    name: "John Doe",
-    email: "john.doe@pizzahub.com",
-    role: "admin",
-    status: "active",
-    phone: "+1 234 567 8901",
-    joinDate: "2023-01-15",
-  },
-  {
-    id: "2",
-    name: "Jane Smith",
-    email: "jane.smith@pizzahub.com",
-    role: "manager",
-    status: "active",
-    phone: "+1 234 567 8902",
-    joinDate: "2023-03-20",
-  },
-  {
-    id: "3",
-    name: "Mike Johnson",
-    email: "mike.j@pizzahub.com",
-    role: "chef",
-    status: "active",
-    phone: "+1 234 567 8903",
-    joinDate: "2023-05-10",
-  },
-  {
-    id: "4",
-    name: "Sarah Wilson",
-    email: "sarah.w@pizzahub.com",
-    role: "cashier",
-    status: "active",
-    phone: "+1 234 567 8904",
-    joinDate: "2023-06-25",
-  },
-  {
-    id: "5",
-    name: "Tom Brown",
-    email: "tom.b@pizzahub.com",
-    role: "chef",
-    status: "inactive",
-    phone: "+1 234 567 8905",
-    joinDate: "2023-04-12",
-  },
-  {
-    id: "6",
-    name: "Emily Davis",
-    email: "emily.d@pizzahub.com",
-    role: "cashier",
-    status: "active",
-    phone: "+1 234 567 8906",
-    joinDate: "2023-08-01",
-  },
-  {
-    id: "7",
-    name: "Chris Lee",
-    email: "chris.l@pizzahub.com",
-    role: "delivery",
-    status: "active",
-    phone: "+1 234 567 8907",
-    joinDate: "2023-09-15",
-  },
-  {
-    id: "8",
-    name: "Anna Martinez",
-    email: "anna.m@pizzahub.com",
-    role: "delivery",
-    status: "inactive",
-    phone: "+1 234 567 8908",
-    joinDate: "2023-07-20",
-  },
+interface RoleOption {
+  value: string
+  id: number
+  label: string
+  color: string
+}
+
+const ROLE_COLORS = [
+  "bg-primary/10 text-primary border-primary/20",
+  "bg-chart-2/10 text-chart-2 border-chart-2/20",
+  "bg-chart-3/10 text-chart-3 border-chart-3/20",
+  "bg-chart-4/10 text-chart-4 border-chart-4/20",
+  "bg-chart-5/10 text-chart-5 border-chart-5/20",
 ]
 
-const roles = [
-  { value: "admin", label: "Admin", color: "bg-primary/10 text-primary border-primary/20" },
-  { value: "manager", label: "Manager", color: "bg-chart-3/10 text-chart-3 border-chart-3/20" },
-  { value: "chef", label: "Chef", color: "bg-chart-4/10 text-chart-4 border-chart-4/20" },
-  { value: "cashier", label: "Cashier", color: "bg-chart-2/10 text-chart-2 border-chart-2/20" },
-  { value: "delivery", label: "Delivery", color: "bg-chart-5/10 text-chart-5 border-chart-5/20" },
-]
+function toNumber(v: unknown): number | null {
+  if (typeof v === "number" && Number.isFinite(v)) return v
+  if (typeof v === "string" && v.trim().length > 0) {
+    const n = Number(v)
+    if (Number.isFinite(n)) return n
+  }
+  return null
+}
+
+function splitName(fullName: string): { first: string; last: string } {
+  const name = fullName.trim().replace(/\s+/g, " ")
+  if (!name) return { first: "", last: "" }
+  const parts = name.split(" ")
+  if (parts.length === 1) return { first: parts[0], last: "-" }
+  return { first: parts[0], last: parts.slice(1).join(" ") }
+}
+
+function mapRoleOption(role: ApiRole, idx: number): RoleOption | null {
+  const id = toNumber(role.id)
+  if (id == null) return null
+  return {
+    id,
+    value: String(id),
+    label: role.name?.trim() || `Role ${id}`,
+    color: ROLE_COLORS[idx % ROLE_COLORS.length],
+  }
+}
+
+function mapEmployee(e: ApiEmployee, roleById: Map<number, RoleOption>): Employee | null {
+  const id = toNumber(e.id)
+  if (id == null) return null
+  const roleId = toNumber(e.role_id) ?? toNumber(e.role?.id) ?? 0
+  const first = e.first_name?.trim() ?? ""
+  const last = e.last_name?.trim() ?? ""
+  const name = (e.name?.trim() || `${first} ${last}`.trim() || `Employee #${id}`).trim()
+  const roleName = roleById.get(roleId)?.label || e.role?.name?.trim() || "Unknown"
+  const rawStatus = e.status?.toLowerCase() ?? "active"
+  const status: "active" | "inactive" = rawStatus === "inactive" ? "inactive" : "active"
+  const joinDateRaw = (e.hire_date || e.created_at || "").slice(0, 10)
+  return {
+    id,
+    name,
+    email: e.email?.trim() || "",
+    roleId,
+    roleName,
+    status,
+    phone: e.phone?.trim() || "",
+    joinDate: joinDateRaw || new Date().toISOString().split("T")[0],
+  }
+}
 
 export default function EmployeesPage() {
-  const [employees, setEmployees] = useState<Employee[]>(initialEmployees)
+  const [employees, setEmployees] = useState<Employee[]>([])
+  const [roles, setRoles] = useState<RoleOption[]>([])
+  const [loading, setLoading] = useState(true)
+  const [loadError, setLoadError] = useState<string | null>(null)
+  const [saving, setSaving] = useState(false)
+  const [actionError, setActionError] = useState<string | null>(null)
+
   const [searchQuery, setSearchQuery] = useState("")
   const [roleFilter, setRoleFilter] = useState("all")
   const [isAddDialogOpen, setIsAddDialogOpen] = useState(false)
   const [editingEmployee, setEditingEmployee] = useState<Employee | null>(null)
+  const [deleteTarget, setDeleteTarget] = useState<Employee | null>(null)
+  const [deletePending, setDeletePending] = useState(false)
   const [formData, setFormData] = useState({
     name: "",
     email: "",
-    role: "cashier",
+    roleId: "",
     status: "active" as "active" | "inactive",
     phone: "",
   })
+
+  const roleById = useMemo(() => {
+    return new Map(roles.map((r) => [r.id, r]))
+  }, [roles])
+
+  const refresh = useCallback(async () => {
+    setLoading(true)
+    setLoadError(null)
+    const [roleRes, empRes] = await Promise.all([
+      apiListRoles(),
+      apiListEmployees({ per_page: 100 }),
+    ])
+
+    if (!roleRes.ok) {
+      if (!isUnauthorizedApiError(roleRes)) setLoadError(roleRes.message)
+      setLoading(false)
+      return
+    }
+    if (!empRes.ok) {
+      if (!isUnauthorizedApiError(empRes)) setLoadError(empRes.message)
+      setLoading(false)
+      return
+    }
+
+    const mappedRoles = roleRes.data.map(mapRoleOption).filter((r): r is RoleOption => r !== null)
+    const roleMap = new Map(mappedRoles.map((r) => [r.id, r]))
+    const mappedEmployees = empRes.data
+      .map((e) => mapEmployee(e, roleMap))
+      .filter((e): e is Employee => e !== null)
+
+    setRoles(mappedRoles)
+    setEmployees(mappedEmployees)
+    setLoading(false)
+  }, [])
+
+  useEffect(() => {
+    void refresh()
+  }, [refresh])
 
   const filteredEmployees = employees.filter((emp) => {
     const matchesSearch =
       emp.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
       emp.email.toLowerCase().includes(searchQuery.toLowerCase())
-    const matchesRole = roleFilter === "all" || emp.role === roleFilter
+    const matchesRole = roleFilter === "all" || String(emp.roleId) === roleFilter
     return matchesSearch && matchesRole
   })
 
   const activeCount = employees.filter((e) => e.status === "active").length
   const inactiveCount = employees.filter((e) => e.status === "inactive").length
 
-  const handleAddEmployee = () => {
-    const newEmployee: Employee = {
-      id: Date.now().toString(),
-      name: formData.name,
-      email: formData.email,
-      role: formData.role,
-      status: formData.status,
-      phone: formData.phone,
-      joinDate: new Date().toISOString().split("T")[0],
+  const handleAddEmployee = async () => {
+    const trimmedName = formData.name.trim()
+    const trimmedEmail = formData.email.trim()
+    const roleId = Number(formData.roleId)
+    if (!trimmedName || !trimmedEmail || !Number.isFinite(roleId) || roleId <= 0) {
+      setActionError("Name, email and role are required.")
+      return
     }
-    setEmployees([...employees, newEmployee])
+    setActionError(null)
+    setSaving(true)
+    const { first, last } = splitName(trimmedName)
+    const res = await apiCreateEmployee({
+      first_name: first,
+      last_name: last,
+      email: trimmedEmail,
+      phone: formData.phone.trim() || null,
+      role_id: roleId,
+      hire_date: new Date().toISOString().slice(0, 10),
+    })
+    if (!res.ok) {
+      setSaving(false)
+      if (!isUnauthorizedApiError(res)) setActionError(res.message)
+      return
+    }
+    if (formData.status === "inactive") {
+      const list = await apiListEmployees({ per_page: 1, search: trimmedEmail })
+      if (list.ok) {
+        const created = list.data
+          .map((e) => mapEmployee(e, roleById))
+          .find((e): e is Employee => e !== null && e.email.toLowerCase() === trimmedEmail.toLowerCase())
+        if (created) await apiPatchEmployeeStatus(created.id, "inactive")
+      }
+    }
+    setSaving(false)
     setIsAddDialogOpen(false)
     resetForm()
+    await refresh()
+    toast({ title: "Saved", description: "Employee was created." })
   }
 
-  const handleEditEmployee = () => {
+  const handleEditEmployee = async () => {
     if (!editingEmployee) return
-    setEmployees((emps) =>
-      emps.map((emp) =>
-        emp.id === editingEmployee.id
-          ? {
-              ...emp,
-              name: formData.name,
-              email: formData.email,
-              role: formData.role,
-              status: formData.status,
-              phone: formData.phone,
-            }
-          : emp
-      )
-    )
+    const trimmedName = formData.name.trim()
+    const trimmedEmail = formData.email.trim()
+    const roleId = Number(formData.roleId)
+    if (!trimmedName || !trimmedEmail || !Number.isFinite(roleId) || roleId <= 0) {
+      setActionError("Name, email and role are required.")
+      return
+    }
+    setActionError(null)
+    setSaving(true)
+    const { first, last } = splitName(trimmedName)
+    const res = await apiUpdateEmployee(editingEmployee.id, {
+      first_name: first,
+      last_name: last,
+      email: trimmedEmail,
+      phone: formData.phone.trim() || null,
+      role_id: roleId,
+      hire_date: editingEmployee.joinDate,
+    })
+    if (!res.ok) {
+      setSaving(false)
+      if (!isUnauthorizedApiError(res)) setActionError(res.message)
+      return
+    }
+    const statusRes = await apiPatchEmployeeStatus(editingEmployee.id, formData.status)
+    setSaving(false)
+    if (!statusRes.ok) {
+      if (!isUnauthorizedApiError(statusRes)) setActionError(statusRes.message)
+      return
+    }
     setEditingEmployee(null)
     resetForm()
+    await refresh()
+    toast({ title: "Saved", description: "Employee was updated." })
   }
 
-  const handleDeleteEmployee = (id: string) => {
-    setEmployees((emps) => emps.filter((emp) => emp.id !== id))
+  const handleDeleteEmployee = async () => {
+    if (!deleteTarget) return
+    const targetId = deleteTarget.id
+    setDeletePending(true)
+    setActionError(null)
+    const res = await apiDeleteEmployee(targetId)
+    if (!res.ok) {
+      if (isUnauthorizedApiError(res)) {
+        setDeletePending(false)
+        return
+      }
+      // Some environments expose only status transitions instead of hard delete.
+      const fallbackStatuses: Array<"active" | "inactive"> = ["inactive"]
+      let fallbackOk = false
+      for (const nextStatus of fallbackStatuses) {
+        const fallback = await apiPatchEmployeeStatus(targetId, nextStatus)
+        if (fallback.ok) {
+          fallbackOk = true
+          break
+        }
+      }
+      setDeletePending(false)
+      if (!fallbackOk) {
+        setActionError(res.message || "Unable to delete this employee.")
+        return
+      }
+      setDeleteTarget(null)
+      setEmployees((prev) => prev.filter((e) => e.id !== targetId))
+      toast({ title: "Saved", description: "Employee was deactivated." })
+      return
+    }
+    setDeletePending(false)
+    setDeleteTarget(null)
+    setEmployees((prev) => prev.filter((e) => e.id !== targetId))
+    toast({ title: "Deleted", description: "Employee was removed." })
   }
 
   const resetForm = () => {
+    setActionError(null)
     setFormData({
       name: "",
       email: "",
-      role: "cashier",
+      roleId: roles[0] ? String(roles[0].id) : "",
       status: "active",
       phone: "",
     })
   }
 
   const openEditDialog = (emp: Employee) => {
+    setActionError(null)
     setEditingEmployee(emp)
     setFormData({
       name: emp.name,
       email: emp.email,
-      role: emp.role,
+      roleId: String(emp.roleId),
       status: emp.status,
       phone: emp.phone,
     })
@@ -220,13 +348,46 @@ export default function EmployeesPage() {
       .toUpperCase()
   }
 
-  const getRoleStyle = (role: string) => {
-    return roles.find((r) => r.value === role)?.color || ""
+  useEffect(() => {
+    if (roles.length && !formData.roleId) {
+      setFormData((f) => ({ ...f, roleId: String(roles[0].id) }))
+    }
+  }, [roles, formData.roleId])
+
+  const getRoleStyle = (roleId: number) => {
+    return roleById.get(roleId)?.color || ""
   }
 
   return (
     <DashboardLayout>
       <div className="space-y-6">
+        <AlertDialog
+          open={deleteTarget !== null}
+          onOpenChange={(open) => {
+            if (!open && !deletePending) setDeleteTarget(null)
+          }}
+        >
+          <AlertDialogContent>
+            <AlertDialogHeader>
+              <AlertDialogTitle>Delete employee?</AlertDialogTitle>
+              <AlertDialogDescription>
+                This action cannot be undone.{" "}
+                <span className="font-medium">{deleteTarget?.name ?? "Employee"}</span> will be removed.
+              </AlertDialogDescription>
+            </AlertDialogHeader>
+            <AlertDialogFooter>
+              <AlertDialogCancel disabled={deletePending}>Cancel</AlertDialogCancel>
+              <Button
+                variant="destructive"
+                disabled={deletePending}
+                onClick={() => void handleDeleteEmployee()}
+              >
+                {deletePending ? "Deleting..." : "Delete"}
+              </Button>
+            </AlertDialogFooter>
+          </AlertDialogContent>
+        </AlertDialog>
+
         {/* Page header */}
         <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
           <div>
@@ -235,7 +396,13 @@ export default function EmployeesPage() {
               Manage your team members and their roles
             </p>
           </div>
-          <Dialog open={isAddDialogOpen} onOpenChange={setIsAddDialogOpen}>
+          <Dialog
+            open={isAddDialogOpen}
+            onOpenChange={(open) => {
+              setIsAddDialogOpen(open)
+              if (!open && !saving) resetForm()
+            }}
+          >
             <DialogTrigger asChild>
               <Button
                 className="bg-primary text-primary-foreground hover:bg-primary/90"
@@ -253,14 +420,28 @@ export default function EmployeesPage() {
                 </DialogDescription>
               </DialogHeader>
               <EmployeeForm
+                roles={roles}
                 formData={formData}
                 setFormData={setFormData}
                 onSubmit={handleAddEmployee}
                 submitLabel="Add Employee"
+                submitting={saving}
+                actionError={actionError}
               />
             </DialogContent>
           </Dialog>
         </div>
+
+        {loadError && (
+          <Card className="border-destructive/40">
+            <CardContent className="pt-6 text-sm text-destructive">{loadError}</CardContent>
+          </Card>
+        )}
+        {actionError && !isAddDialogOpen && !editingEmployee && (
+          <Card className="border-destructive/40">
+            <CardContent className="pt-6 text-sm text-destructive">{actionError}</CardContent>
+          </Card>
+        )}
 
         {/* Stats */}
         <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
@@ -337,6 +518,14 @@ export default function EmployeesPage() {
             </CardTitle>
           </CardHeader>
           <CardContent>
+            {loading ? (
+              <div className="flex items-center gap-3 py-8 text-muted-foreground">
+                <Spinner className="h-4 w-4" />
+                Loading employees...
+              </div>
+            ) : filteredEmployees.length === 0 ? (
+              <div className="py-8 text-sm text-muted-foreground">No employees found.</div>
+            ) : (
             <Table>
               <TableHeader>
                 <TableRow>
@@ -367,8 +556,8 @@ export default function EmployeesPage() {
                     </TableCell>
                     <TableCell className="hidden md:table-cell">{emp.email}</TableCell>
                     <TableCell>
-                      <Badge variant="outline" className={getRoleStyle(emp.role)}>
-                        {roles.find((r) => r.value === emp.role)?.label}
+                      <Badge variant="outline" className={getRoleStyle(emp.roleId)}>
+                        {emp.roleName}
                       </Badge>
                     </TableCell>
                     <TableCell>
@@ -387,7 +576,12 @@ export default function EmployeesPage() {
                       <div className="flex items-center justify-end gap-1">
                         <Dialog
                           open={editingEmployee?.id === emp.id}
-                          onOpenChange={(open) => !open && setEditingEmployee(null)}
+                          onOpenChange={(open) => {
+                            if (!open && !saving) {
+                              setEditingEmployee(null)
+                              resetForm()
+                            }
+                          }}
                         >
                           <DialogTrigger asChild>
                             <Button
@@ -407,10 +601,13 @@ export default function EmployeesPage() {
                         </DialogDescription>
                       </DialogHeader>
                             <EmployeeForm
+                              roles={roles}
                               formData={formData}
                               setFormData={setFormData}
                               onSubmit={handleEditEmployee}
                               submitLabel="Save Changes"
+                              submitting={saving}
+                              actionError={actionError}
                             />
                           </DialogContent>
                         </Dialog>
@@ -418,7 +615,8 @@ export default function EmployeesPage() {
                           variant="ghost"
                           size="icon"
                           className="h-8 w-8 text-destructive hover:text-destructive"
-                          onClick={() => handleDeleteEmployee(emp.id)}
+                          onClick={() => setDeleteTarget(emp)}
+                          disabled={deletePending || saving}
                         >
                           <Trash2 className="h-4 w-4" />
                         </Button>
@@ -428,6 +626,7 @@ export default function EmployeesPage() {
                 ))}
               </TableBody>
             </Table>
+            )}
           </CardContent>
         </Card>
       </div>
@@ -436,15 +635,19 @@ export default function EmployeesPage() {
 }
 
 function EmployeeForm({
+  roles,
   formData,
   setFormData,
   onSubmit,
   submitLabel,
+  submitting,
+  actionError,
 }: {
+  roles: RoleOption[]
   formData: {
     name: string
     email: string
-    role: string
+    roleId: string
     status: "active" | "inactive"
     phone: string
   }
@@ -452,13 +655,15 @@ function EmployeeForm({
     React.SetStateAction<{
       name: string
       email: string
-      role: string
+      roleId: string
       status: "active" | "inactive"
       phone: string
     }>
   >
-  onSubmit: () => void
+  onSubmit: () => Promise<void> | void
   submitLabel: string
+  submitting: boolean
+  actionError: string | null
 }) {
   return (
     <FieldGroup className="mt-4">
@@ -493,8 +698,8 @@ function EmployeeForm({
       <Field>
         <FieldLabel htmlFor="role">Role</FieldLabel>
         <Select
-          value={formData.role}
-          onValueChange={(value) => setFormData({ ...formData, role: value })}
+          value={formData.roleId}
+          onValueChange={(value) => setFormData({ ...formData, roleId: value })}
         >
           <SelectTrigger>
             <SelectValue />
@@ -525,9 +730,10 @@ function EmployeeForm({
           </SelectContent>
         </Select>
       </Field>
+      {actionError && <p className="text-sm text-destructive">{actionError}</p>}
       <DialogFooter className="mt-4">
-        <Button onClick={onSubmit} className="w-full">
-          {submitLabel}
+        <Button onClick={onSubmit} className="w-full" disabled={submitting}>
+          {submitting ? "Saving..." : submitLabel}
         </Button>
       </DialogFooter>
     </FieldGroup>
