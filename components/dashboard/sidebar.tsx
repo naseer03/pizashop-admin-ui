@@ -27,7 +27,7 @@ const menuItems = [
   { name: "Dashboard", href: "/", icon: LayoutDashboard },
   { name: "Orders", href: "/orders", icon: ShoppingCart },
   { name: "Menu Management", href: "/menu", icon: UtensilsCrossed },
-  { name: "Inventory", href: "/inventory", icon: Package },
+  // { name: "Inventory", href: "/inventory", icon: Package },
   { name: "Customers", href: "/customers", icon: Users },
   { name: "Employees", href: "/employees", icon: UserCog },
   { name: "Roles & Permissions", href: "/roles", icon: Shield },

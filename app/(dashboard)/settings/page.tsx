@@ -1,6 +1,6 @@
 "use client"
 
-import { useCallback, useEffect, useState } from "react"
+import { useCallback, useEffect, useMemo, useState } from "react"
 import { DashboardLayout } from "@/components/dashboard/dashboard-layout"
 import {
   Card,
@@ -33,7 +33,10 @@ import {
   Pencil,
   Trash2,
   ChevronRight,
+  Cherry, 
+  Circle
 } from "lucide-react"
+
 import {
   Dialog,
   DialogContent,
@@ -55,6 +58,12 @@ import {
 import { Spinner } from "@/components/ui/spinner"
 import type { ApiCategory } from "@/lib/api/menu"
 import { apiListCategories } from "@/lib/api/menu"
+import {
+  apiCreateTopping,
+  apiDeleteTopping,
+  apiListToppings,
+  apiUpdateTopping,
+} from "@/lib/api/toppings"
 import {
   apiGetStore,
   apiPutStore,
@@ -90,6 +99,21 @@ import {
 import { isUnauthorizedApiError } from "@/lib/api/client"
 import { toast } from "@/hooks/use-toast"
 
+interface Topping {
+  id: string
+  name: string
+  category: string
+  price: number
+  available: boolean
+}
+
+interface Crust {
+  id: string
+  name: string
+  price: number
+  available: boolean
+}
+ 
 interface Subcategory {
   id: string
   name: string
@@ -98,18 +122,107 @@ interface Subcategory {
 interface Category {
   id: string
   name: string
+  slug?: string
   subcategories: Subcategory[]
 }
+
+const initialCrusts: Crust[] = [
+  { id: "1", name: "Hand Tossed", price: 0.00, available: true },
+  { id: "2", name: "Thin Crust", price: 0.00, available: true },
+  { id: "3", name: "Deep Dish", price: 2.00, available: true },
+  { id: "4", name: "Stuffed Crust", price: 2.50, available: true },
+  { id: "5", name: "Gluten Free", price: 3.00, available: true },
+  { id: "6", name: "Cauliflower", price: 3.50, available: false },
+]
 
 function apiCategoryToUi(c: ApiCategory): Category {
   return {
     id: String(c.id),
     name: c.name,
+    slug: c.slug ? String(c.slug) : undefined,
     subcategories: (c.subcategories ?? []).map((s) => ({
       id: String(s.id),
       name: s.name,
     })),
   }
+}
+
+function normalizeToppingCategory(raw: unknown): string {
+  const s = String(raw ?? "")
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/g, "_")
+
+  if (!s) return "veggies"
+  if (s === "veggies" || s === "vegetables" || s.includes("veg")) return "veggies"
+  if (s === "meats" || s === "meat" || s.includes("meat")) return "meats"
+  if (s === "cheese" || s.includes("cheese")) return "cheese"
+  if (s === "sauce" || s.includes("sauce")) return "sauce"
+  return s
+}
+
+function toFiniteNumber(raw: unknown): number | null {
+  if (typeof raw === "number" && Number.isFinite(raw)) return raw
+  if (typeof raw === "string") {
+    const n = Number.parseFloat(raw)
+    return Number.isFinite(n) ? n : null
+  }
+  if (raw != null && typeof raw === "bigint") return Number(raw)
+  return null
+}
+
+function toBoolean(raw: unknown): boolean | null {
+  if (typeof raw === "boolean") return raw
+  if (typeof raw === "number") return raw !== 0
+  if (typeof raw === "string") {
+    const s = raw.trim().toLowerCase()
+    if (s === "true" || s === "1" || s === "yes") return true
+    if (s === "false" || s === "0" || s === "no") return false
+  }
+  return null
+}
+
+function mapApiToppingToUi(raw: unknown): Topping | null {
+  if (!raw || typeof raw !== "object") return null
+  const o = raw as Record<string, unknown>
+
+  const name =
+    (o.name ?? o.topping_name ?? o.title ?? o.display_name ?? "").toString().trim()
+  if (!name) return null
+
+  const id = o.id ?? o.topping_id ?? o.toppingId ?? o.item_id ?? o.uuid ?? name
+
+  const priceRaw =
+    o.price ??
+    o.additional_price ??
+    o.additionalPrice ??
+    o.extra_price ??
+    o.extraPrice ??
+    o.amount ??
+    o.cost
+  const price = toFiniteNumber(priceRaw) ?? 0
+
+  const availableRaw =
+    o.available ?? o.is_available ?? o.isAvailable ?? o.active ?? o.enabled
+  const available = toBoolean(availableRaw) ?? true
+
+  const categoryRaw = o.category ?? o.topping_category ?? o.toppingCategory ?? o.type
+  const category = normalizeToppingCategory(categoryRaw)
+
+  return {
+    id: String(id),
+    name,
+    category,
+    price,
+    available,
+  }
+}
+
+function mapApiToppingsToUi(rawData: unknown): Topping[] {
+  const arr = Array.isArray(rawData) ? rawData : []
+  return arr
+    .map(mapApiToppingToUi)
+    .filter((t): t is Topping => t != null)
 }
 
 export default function SettingsPage() {
@@ -135,39 +248,78 @@ export default function SettingsPage() {
   const [subcategoryName, setSubcategoryName] = useState("")
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false)
   const [deletePending, setDeletePending] = useState(false)
+  const [toppingBusy, setToppingBusy] = useState(false)
   const [itemToDelete, setItemToDelete] = useState<{
-    type: "category" | "subcategory"
-    categoryId: string
+    type: "category" | "subcategory" | "topping" | "crust"
+    categoryId?: string
     subcategoryId?: string
+    itemId?: string
   } | null>(null)
   const [expandedCategories, setExpandedCategories] = useState<string[]>([])
+    // Toppings state
+  const [toppings, setToppings] = useState<Topping[]>([])
+  const [toppingDialogOpen, setToppingDialogOpen] = useState(false)
+  const [editingTopping, setEditingTopping] = useState<Topping | null>(null)
+  const [toppingForm, setToppingForm] = useState({ name: "", category: "", price: "" })
+  const toppingCategoryOptions = useMemo(() => {
+    const map = new Map<string, string>()
+    for (const c of categories) {
+      const rawValue = (c.slug ?? c.name) ?? ""
+      const value = normalizeToppingCategory(rawValue)
+      if (!value) continue
+      if (!map.has(value)) map.set(value, c.name)
+    }
+
+    return Array.from(map.entries()).map(([value, label]) => ({
+      value,
+      label,
+    }))
+  }, [categories])
+
+  useEffect(() => {
+    if (!toppingForm.category && toppingCategoryOptions.length > 0) {
+      setToppingForm((prev) => ({
+        ...prev,
+        category: toppingCategoryOptions[0]?.value ?? prev.category,
+      }))
+    }
+  }, [toppingCategoryOptions, toppingForm.category])
+  const [toppingFilter, setToppingFilter] = useState<string>("all")
+
+  // Crusts state
+  const [crusts, setCrusts] = useState<Crust[]>(initialCrusts)
+  const [crustDialogOpen, setCrustDialogOpen] = useState(false)
+  const [editingCrust, setEditingCrust] = useState<Crust | null>(null)
+  const [crustForm, setCrustForm] = useState({ name: "", price: "" })
 
   const loadAll = useCallback(async () => {
     setLoading(true)
     setLoadError(null)
 
-    const [st, no, bh, pay, cat] = await Promise.all([
+    const [st, no, bh, pay, cat, toppingsRes] = await Promise.all([
       apiGetStore(),
       apiGetNotifications(),
       apiGetBusinessHours(),
       apiGetPayments(),
       apiListCategories(),
+      apiListToppings(),
     ])
 
-    const batch = [st, no, bh, pay, cat]
+    const batch = [st, no, bh, pay, cat, toppingsRes]
     if (batch.some((r) => isUnauthorizedApiError(r))) {
       setLoading(false)
       return
     }
 
+    let next = DEFAULT_SETTINGS
     if (!st.ok) {
+      // General tab depends on store settings; toppings/categories should still load.
       setLoadError(st.message)
-      setLoading(false)
-      return
+      setStoreSnapshot({})
+    } else {
+      setStoreSnapshot({ ...(st.data as Record<string, unknown>) })
+      next = mapStoreToForm(st.data as Record<string, unknown>, DEFAULT_SETTINGS)
     }
-
-    setStoreSnapshot({ ...(st.data as Record<string, unknown>) })
-    let next = mapStoreToForm(st.data as Record<string, unknown>, DEFAULT_SETTINGS)
 
     if (no.ok) {
       next = { ...next, ...mapNotificationsToForm(no.data, next) }
@@ -199,8 +351,21 @@ export default function SettingsPage() {
       })
     }
 
+    if (toppingsRes.ok) {
+      setToppings(mapApiToppingsToUi(toppingsRes.data))
+    } else {
+      // Keep the settings page usable even if the toppings endpoint errors.
+      setToppings([])
+    }
+
     setLoading(false)
   }, [])
+
+  async function refreshToppings() {
+    const res = await apiListToppings()
+    if (res.ok) setToppings(mapApiToppingsToUi(res.data))
+    else if (!isUnauthorizedApiError(res)) setLoadError(res.message)
+  }
 
   useEffect(() => {
     void loadAll()
@@ -382,29 +547,173 @@ export default function SettingsPage() {
 
   async function handleDelete() {
     if (!itemToDelete) return
+    const deleteType = itemToDelete.type
     setDeletePending(true)
     setLoadError(null)
-    if (itemToDelete.type === "category") {
+    if (itemToDelete.type === "category" && itemToDelete.categoryId) {
       const res = await apiDeleteCategory(Number(itemToDelete.categoryId))
       setDeletePending(false)
       if (!res.ok) {
         if (!isUnauthorizedApiError(res)) setLoadError(res.message)
         return
       }
-    } else if (itemToDelete.subcategoryId) {
+    } else if (itemToDelete.type === "subcategory" && itemToDelete.subcategoryId ) {
       const res = await apiDeleteSubcategory(Number(itemToDelete.subcategoryId))
       setDeletePending(false)
       if (!res.ok) {
         if (!isUnauthorizedApiError(res)) setLoadError(res.message)
         return
       }
+      
+    } 
+    else if (itemToDelete.type === "topping" && itemToDelete.itemId) {
+      const res = await apiDeleteTopping(itemToDelete.itemId)
+      setDeletePending(false)
+      if (!res.ok) {
+        if (!isUnauthorizedApiError(res)) setLoadError(res.message)
+        return
+      }
+    } else if (itemToDelete.type === "crust" && itemToDelete.itemId) {
+      setCrusts((prev) => prev.filter((c) => c.id !== itemToDelete.itemId))
     }
     setDeleteDialogOpen(false)
     setItemToDelete(null)
-    const cat = await apiListCategories()
-    if (cat.ok) setCategories(cat.data.map(apiCategoryToUi))
+    if (deleteType === "category" || deleteType === "subcategory") {
+      const cat = await apiListCategories()
+      if (cat.ok) setCategories(cat.data.map(apiCategoryToUi))
+      return
+    }
+    if (deleteType === "topping") {
+      await refreshToppings()
+    }
+  }
+  // Topping handlers
+  const openAddTopping = () => {
+    setEditingTopping(null)
+    setToppingForm({
+      name: "",
+      category: toppingCategoryOptions[0]?.value ?? "veggies",
+      price: "",
+    })
+    setToppingDialogOpen(true)
   }
 
+  const openEditTopping = (topping: Topping) => {
+    setEditingTopping(topping)
+    setToppingForm({ name: topping.name, category: topping.category, price: topping.price.toString() })
+    setToppingDialogOpen(true)
+  }
+
+  const handleSaveTopping = async () => {
+    const name = toppingForm.name.trim()
+    if (!name || !toppingForm.category || !toppingForm.price.trim()) return
+    const priceNum = Number.parseFloat(toppingForm.price)
+    if (!Number.isFinite(priceNum)) return
+
+    setToppingBusy(true)
+    setLoadError(null)
+
+    const payload = {
+      name,
+      category: toppingForm.category,
+      price: priceNum,
+      is_available: editingTopping?.available ?? true,
+      sort_order: 0,
+    }
+
+    const res = editingTopping
+      ? await apiUpdateTopping(editingTopping.id, payload)
+      : await apiCreateTopping(payload)
+
+    setToppingBusy(false)
+    if (!res.ok) {
+      if (!isUnauthorizedApiError(res)) setLoadError(res.message)
+      return
+    }
+
+    setToppingDialogOpen(false)
+    setEditingTopping(null)
+    await refreshToppings()
+    toast({
+      title: "Saved",
+      description: editingTopping ? "Topping was updated." : "Topping was added.",
+    })
+  }
+
+  const toggleToppingAvailability = async (id: string) => {
+    if (toppingBusy) return
+    const current = toppings.find((t) => t.id === id)
+    if (!current) return
+    const nextAvailable = !current.available
+
+    setToppingBusy(true)
+    setLoadError(null)
+
+    // Optimistic update
+    setToppings((prev) =>
+      prev.map((t) => (t.id === id ? { ...t, available: nextAvailable } : t)),
+    )
+
+    const res = await apiUpdateTopping(id, {
+      name: current.name,
+      category: current.category,
+      price: current.price,
+      is_available: nextAvailable,
+      sort_order: 0,
+    })
+
+    setToppingBusy(false)
+    if (!res.ok) {
+      if (!isUnauthorizedApiError(res)) setLoadError(res.message)
+      await refreshToppings()
+    }
+  }
+
+  const filteredToppings = toppingFilter === "all" 
+    ? toppings 
+    : toppings.filter((t) => t.category === toppingFilter)
+
+  // Crust handlers
+  const openAddCrust = () => {
+    setEditingCrust(null)
+    setCrustForm({ name: "", price: "" })
+    setCrustDialogOpen(true)
+  }
+
+  const openEditCrust = (crust: Crust) => {
+    setEditingCrust(crust)
+    setCrustForm({ name: crust.name, price: crust.price.toString() })
+    setCrustDialogOpen(true)
+  }
+
+  const handleSaveCrust = () => {
+    if (!crustForm.name.trim()) return
+
+    if (editingCrust) {
+      setCrusts((prev) =>
+        prev.map((c) =>
+          c.id === editingCrust.id
+            ? { ...c, name: crustForm.name, price: parseFloat(crustForm.price || "0") }
+            : c
+        )
+      )
+    } else {
+      const newCrust: Crust = {
+        id: Date.now().toString(),
+        name: crustForm.name,
+        price: parseFloat(crustForm.price || "0"),
+        available: true,
+      }
+      setCrusts((prev) => [...prev, newCrust])
+    }
+    setCrustDialogOpen(false)
+  }
+
+  const toggleCrustAvailability = (id: string) => {
+    setCrusts((prev) =>
+      prev.map((c) => (c.id === id ? { ...c, available: !c.available } : c))
+    )
+  }
   return (
     <DashboardLayout>
       <div className="space-y-6">
@@ -436,12 +745,14 @@ export default function SettingsPage() {
           </div>
         ) : (
           <Tabs defaultValue="general" className="space-y-6">
-            <TabsList className="grid w-full grid-cols-5 lg:w-[620px]">
+            <TabsList className="grid w-full grid-cols-7 lg:w-[820px]">
               <TabsTrigger value="general">General</TabsTrigger>
               <TabsTrigger value="notifications">Notifications</TabsTrigger>
               <TabsTrigger value="payments">Payments</TabsTrigger>
               <TabsTrigger value="hours">Hours</TabsTrigger>
               <TabsTrigger value="categories">Categories</TabsTrigger>
+              <TabsTrigger value="toppings">Toppings</TabsTrigger>
+              <TabsTrigger value="crusts">Crusts</TabsTrigger>
             </TabsList>
 
             <TabsContent value="general">
@@ -953,7 +1264,221 @@ export default function SettingsPage() {
                 </CardContent>
               </Card>
             </TabsContent>
-          </Tabs>
+            {/* Toppings */}
+          <TabsContent value="toppings">
+            <Card>
+              <CardHeader>
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-3">
+                    <div className="rounded-lg bg-primary/10 p-2">
+                      <Cherry className="h-5 w-5 text-primary" />
+                    </div>
+                    <div>
+                      <CardTitle>Pizza Toppings</CardTitle>
+                      <CardDescription>
+                        Manage available toppings and their prices
+                      </CardDescription>
+                    </div>
+                  </div>
+                  <Button onClick={openAddTopping}>
+                    <Plus className="h-4 w-4 mr-2" />
+                    Add Topping
+                  </Button>
+                </div>
+              </CardHeader>
+              <CardContent>
+                <div className="mb-4 flex flex-wrap gap-2">
+                  <Button
+                    variant={toppingFilter === "all" ? "default" : "outline"}
+                    size="sm"
+                    onClick={() => setToppingFilter("all")}
+                  >
+                    All ({toppings.length})
+                  </Button>
+                  {toppingCategoryOptions.map((cat) => (
+                    <Button
+                      key={cat.value}
+                      variant={toppingFilter === cat.value ? "default" : "outline"}
+                      size="sm"
+                      onClick={() => setToppingFilter(cat.value)}
+                    >
+                      {cat.label} ({toppings.filter((t) => t.category === cat.value).length})
+                    </Button>
+                  ))}
+                </div>
+
+                <div className="rounded-lg border">
+                  <table className="w-full">
+                    <thead>
+                      <tr className="border-b bg-muted/50">
+                        <th className="px-4 py-3 text-left text-sm font-medium">Topping</th>
+                        <th className="px-4 py-3 text-left text-sm font-medium">Category</th>
+                        <th className="px-4 py-3 text-left text-sm font-medium">Price</th>
+                        <th className="px-4 py-3 text-center text-sm font-medium">Available</th>
+                        <th className="px-4 py-3 text-right text-sm font-medium">Actions</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {filteredToppings.map((topping) => (
+                        <tr key={topping.id} className="border-b last:border-0">
+                          <td className="px-4 py-3 font-medium">{topping.name}</td>
+                          <td className="px-4 py-3">
+                            <Badge variant="secondary">
+                              {toppingCategoryOptions.find(
+                                (c) => c.value === topping.category,
+                              )?.label ?? topping.category}
+                            </Badge>
+                          </td>
+                          <td className="px-4 py-3">
+                            {topping.price === 0 ? (
+                              <span className="text-muted-foreground">Free</span>
+                            ) : (
+                              <span>+${topping.price.toFixed(2)}</span>
+                            )}
+                          </td>
+                          <td className="px-4 py-3 text-center">
+                            <Switch
+                              checked={topping.available}
+                              disabled={toppingBusy}
+                              onCheckedChange={() => void toggleToppingAvailability(topping.id)}
+                            />
+                          </td>
+                          <td className="px-4 py-3 text-right">
+                            <div className="flex items-center justify-end gap-1">
+                              <Button
+                                variant="ghost"
+                                size="icon"
+                                onClick={() => openEditTopping(topping)}
+                              >
+                                <Pencil className="h-4 w-4" />
+                              </Button>
+                              <Button
+                                variant="ghost"
+                                size="icon"
+                                onClick={() => {
+                                  setItemToDelete({ type: "topping", itemId: topping.id })
+                                  setDeleteDialogOpen(true)
+                                }}
+                              >
+                                <Trash2 className="h-4 w-4 text-destructive" />
+                              </Button>
+                            </div>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+
+                {toppings.length === 0 && (
+                  <div className="py-12 text-center">
+                    <Cherry className="mx-auto h-12 w-12 text-muted-foreground/50" />
+                    <h3 className="mt-4 text-lg font-medium">No toppings yet</h3>
+                    <p className="mt-1 text-sm text-muted-foreground">
+                      Add your first topping to offer customizations.
+                    </p>
+                    <Button className="mt-4" onClick={openAddTopping}>
+                      <Plus className="h-4 w-4 mr-2" />
+                      Add Topping
+                    </Button>
+                  </div>
+                )}
+              </CardContent>
+            </Card>
+          </TabsContent>
+
+          {/* Crusts */}
+          <TabsContent value="crusts">
+            <Card>
+              <CardHeader>
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-3">
+                    <div className="rounded-lg bg-primary/10 p-2">
+                      <Circle className="h-5 w-5 text-primary" />
+                    </div>
+                    <div>
+                      <CardTitle>Crust Options</CardTitle>
+                      <CardDescription>
+                        Manage crust types and additional charges
+                      </CardDescription>
+                    </div>
+                  </div>
+                  <Button onClick={openAddCrust}>
+                    <Plus className="h-4 w-4 mr-2" />
+                    Add Crust
+                  </Button>
+                </div>
+              </CardHeader>
+              <CardContent>
+                <div className="grid gap-3 md:grid-cols-2 lg:grid-cols-3">
+                  {crusts.map((crust) => (
+                    <div
+                      key={crust.id}
+                      className={`rounded-lg border p-4 ${!crust.available ? "opacity-60" : ""}`}
+                    >
+                      <div className="flex items-start justify-between">
+                        <div>
+                          <h4 className="font-medium">{crust.name}</h4>
+                          <p className="text-sm text-muted-foreground">
+                            {crust.price === 0 ? (
+                              "No extra charge"
+                            ) : (
+                              <span>+${crust.price.toFixed(2)}</span>
+                            )}
+                          </p>
+                        </div>
+                        <div className="flex items-center gap-1">
+                          <Button
+                            variant="ghost"
+                            size="icon"
+                            className="h-8 w-8"
+                            onClick={() => openEditCrust(crust)}
+                          >
+                            <Pencil className="h-3.5 w-3.5" />
+                          </Button>
+                          <Button
+                            variant="ghost"
+                            size="icon"
+                            className="h-8 w-8"
+                            onClick={() => {
+                              setItemToDelete({ type: "crust", itemId: crust.id })
+                              setDeleteDialogOpen(true)
+                            }}
+                          >
+                            <Trash2 className="h-3.5 w-3.5 text-destructive" />
+                          </Button>
+                        </div>
+                      </div>
+                      <div className="mt-3 flex items-center justify-between">
+                        <span className="text-sm text-muted-foreground">Available</span>
+                        <Switch
+                          checked={crust.available}
+                          onCheckedChange={() => toggleCrustAvailability(crust.id)}
+                        />
+                      </div>
+                    </div>
+                  ))}
+                </div>
+
+                {crusts.length === 0 && (
+                  <div className="py-12 text-center">
+                    <Circle className="mx-auto h-12 w-12 text-muted-foreground/50" />
+                    <h3 className="mt-4 text-lg font-medium">No crust options yet</h3>
+                    <p className="mt-1 text-sm text-muted-foreground">
+                      Add crust options for your pizzas.
+                    </p>
+                    <Button className="mt-4" onClick={openAddCrust}>
+                      <Plus className="h-4 w-4 mr-2" />
+                      Add Crust
+                    </Button>
+                  </div>
+                )}
+              </CardContent>
+            </Card>
+          </TabsContent>
+        </Tabs>
+
+
         )}
 
         <Dialog
@@ -1047,7 +1572,119 @@ export default function SettingsPage() {
             </DialogFooter>
           </DialogContent>
         </Dialog>
+         {/* Topping Dialog */}
+        <Dialog open={toppingDialogOpen} onOpenChange={setToppingDialogOpen}>
+          <DialogContent>
+            <DialogHeader>
+              <DialogTitle>
+                {editingTopping ? "Edit Topping" : "Add New Topping"}
+              </DialogTitle>
+              <DialogDescription>
+                {editingTopping ? "Update the topping details below." : "Add a new topping with category and price."}
+              </DialogDescription>
+            </DialogHeader>
+            <FieldGroup className="py-4">
+              <Field>
+                <FieldLabel htmlFor="toppingName">Topping Name</FieldLabel>
+                <Input
+                  id="toppingName"
+                  value={toppingForm.name}
+                  onChange={(e) => setToppingForm({ ...toppingForm, name: e.target.value })}
+                  placeholder="e.g., Pepperoni, Mushrooms"
+                />
+              </Field>
+              <Field>
+                <FieldLabel htmlFor="toppingCategory">Category</FieldLabel>
+                <Select
+                  value={toppingForm.category}
+                  onValueChange={(value) => setToppingForm({ ...toppingForm, category: value })}
+                >
+                  <SelectTrigger>
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {toppingCategoryOptions.map((cat) => (
+                      <SelectItem key={cat.value} value={cat.value}>
+                        {cat.label}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </Field>
+              <Field>
+                <FieldLabel htmlFor="toppingPrice">Additional Price ($)</FieldLabel>
+                <Input
+                  id="toppingPrice"
+                  type="number"
+                  step="0.01"
+                  value={toppingForm.price}
+                  onChange={(e) => setToppingForm({ ...toppingForm, price: e.target.value })}
+                  placeholder="0.00"
+                />
+              </Field>
+            </FieldGroup>
+            <DialogFooter>
+              <Button variant="outline" onClick={() => setToppingDialogOpen(false)}>
+                Cancel
+              </Button>
+              <Button
+                onClick={() => void handleSaveTopping()}
+                disabled={
+                  toppingBusy ||
+                  !toppingForm.name.trim() ||
+                  !toppingForm.category ||
+                  !toppingForm.price.trim()
+                }
+              >
+                {editingTopping ? "Save Changes" : "Add Topping"}
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
 
+        {/* Crust Dialog */}
+        <Dialog open={crustDialogOpen} onOpenChange={setCrustDialogOpen}>
+          <DialogContent>
+            <DialogHeader>
+              <DialogTitle>
+                {editingCrust ? "Edit Crust" : "Add New Crust"}
+              </DialogTitle>
+              <DialogDescription>
+                {editingCrust ? "Update the crust details below." : "Add a new crust option with price."}
+              </DialogDescription>
+            </DialogHeader>
+            <FieldGroup className="py-4">
+              <Field>
+                <FieldLabel htmlFor="crustName">Crust Name</FieldLabel>
+                <Input
+                  id="crustName"
+                  value={crustForm.name}
+                  onChange={(e) => setCrustForm({ ...crustForm, name: e.target.value })}
+                  placeholder="e.g., Thin Crust, Deep Dish"
+                />
+              </Field>
+              <Field>
+                <FieldLabel htmlFor="crustPrice">Additional Price ($)</FieldLabel>
+                <Input
+                  id="crustPrice"
+                  type="number"
+                  step="0.01"
+                  value={crustForm.price}
+                  onChange={(e) => setCrustForm({ ...crustForm, price: e.target.value })}
+                  placeholder="0.00 (leave 0 for no extra charge)"
+                />
+              </Field>
+            </FieldGroup>
+            <DialogFooter>
+              <Button variant="outline" onClick={() => setCrustDialogOpen(false)}>
+                Cancel
+              </Button>
+              <Button onClick={handleSaveCrust} disabled={!crustForm.name.trim()}>
+                {editingCrust ? "Save Changes" : "Add Crust"}
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
         <AlertDialog
           open={deleteDialogOpen}
           onOpenChange={(open) => {
@@ -1063,7 +1700,13 @@ export default function SettingsPage() {
               <AlertDialogDescription>
                 {itemToDelete?.type === "category"
                   ? "This will delete the category and all its subcategories. This action cannot be undone."
-                  : "This will delete the subcategory. This action cannot be undone."}
+                  : itemToDelete?.type === "subcategory"
+                    ? "This will delete the subcategory. This action cannot be undone."
+                    : itemToDelete?.type === "topping"
+                      ? "This will delete the topping. This action cannot be undone."
+                      : itemToDelete?.type === "crust"
+                        ? "This will delete the crust. This action cannot be undone."
+                        : "This action cannot be undone."}
               </AlertDialogDescription>
             </AlertDialogHeader>
             <AlertDialogFooter>
@@ -1084,3 +1727,4 @@ export default function SettingsPage() {
     </DashboardLayout>
   )
 }
+
