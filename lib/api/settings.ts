@@ -58,9 +58,16 @@ export async function apiGetBusinessHours():
   const res = await pizzaApiFetch<unknown>('v1/settings/business-hours')
   if (!res.ok) return res
   const inner = unwrapApiData<unknown>(res.data) ?? res.data
-  const arr = Array.isArray(inner)
-    ? inner
-    : unwrapApiArray<BusinessHourRow>(inner ?? res.data)
+  const obj =
+    inner && typeof inner === 'object' && !Array.isArray(inner)
+      ? (inner as Record<string, unknown>)
+      : null
+  const hoursFromObject = Array.isArray(obj?.hours) ? obj.hours : null
+  const arr =
+    Array.isArray(inner)
+      ? inner
+      : hoursFromObject ??
+        unwrapApiArray<BusinessHourRow>(inner ?? res.data)
   return { ok: true, data: arr as BusinessHourRow[] }
 }
 
@@ -68,7 +75,7 @@ export async function apiPutBusinessHours(hours: BusinessHourRow[]) {
   return pizzaApiFetch<unknown>('v1/settings/business-hours', {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(hours),
+    body: JSON.stringify({ hours }),
   })
 }
 

@@ -1,13 +1,27 @@
 import type { ApiCategory, ApiMenuItem, ApiMenuSize } from '@/lib/api/menu'
 
+function toHttpUrlOrNull(raw: string): string | null {
+  const v = raw.trim()
+  if (!v) return null
+  try {
+    const u = new URL(v)
+    if (u.protocol === 'http:' || u.protocol === 'https:') return u.toString()
+  } catch {
+    return null
+  }
+  return null
+}
+
 export type MenuRow = {
   id: number
   name: string
   description: string
   categoryId: number
   categoryName: string
+  category: { id: number; name: string }
   subcategoryId: number | null
   subcategoryName: string
+  subcategory: { id: number | null; name: string }
   basePrice: number
   sizes: { small?: number; medium?: number; large?: number } | null
   available: boolean
@@ -55,25 +69,46 @@ export type MenuFormValues = {
   mediumPrice: string
   largePrice: string
   description: string
+  imageUrl: string
   available: boolean
 }
 
 export function menuItemToRow(item: ApiMenuItem, categories: ApiCategory[]): MenuRow {
-  const cat = categories.find((c) => c.id === item.category_id)
-  const sub = cat?.subcategories?.find((s) => s.id === item.subcategory_id)
+  const fallbackCategoryId = item.category_id ?? item.category?.id ?? 0
+  const cat =
+    categories.find((c) => c.id === fallbackCategoryId) ??
+    (item.category
+      ? {
+          id: item.category.id,
+          name: item.category.name,
+          has_sizes: item.category.has_sizes ?? false,
+          subcategories: [],
+        }
+      : undefined)
+  const derivedSubId = item.subcategory_id ?? item.subcategory?.id ?? null
+  const sub =
+    cat?.subcategories?.find((s) => s.id === derivedSubId) ??
+    (item.subcategory ? { id: item.subcategory.id, name: item.subcategory.name } : undefined)
   const sizes = parseSizesFromApi(item.sizes ?? undefined)
   const hasSizes =
+    item.category?.has_sizes === true ||
     cat?.has_sizes === true ||
     (Array.isArray(item.sizes) && item.sizes.length > 0)
+  const categoryId = cat?.id ?? fallbackCategoryId
+  const categoryName = cat?.name ?? item.category?.name ?? `Category ${categoryId}`
+  const subcategoryId = derivedSubId
+  const subcategoryName = sub?.name ?? (subcategoryId ? `Sub #${subcategoryId}` : '—')
 
   return {
     id: item.id,
     name: item.name,
     description: item.description ?? '',
-    categoryId: item.category_id,
-    categoryName: cat?.name ?? `Category ${item.category_id}`,
-    subcategoryId: item.subcategory_id ?? null,
-    subcategoryName: sub?.name ?? (item.subcategory_id ? `Sub #${item.subcategory_id}` : '—'),
+    categoryId,
+    categoryName,
+    category: { id: categoryId, name: categoryName },
+    subcategoryId,
+    subcategoryName,
+    subcategory: { id: subcategoryId, name: subcategoryName },
     basePrice: Number(item.base_price),
     sizes,
     available: item.is_available ?? true,
@@ -92,6 +127,7 @@ export function emptyMenuForm(defaultCategoryId: string): MenuFormValues {
     mediumPrice: '',
     largePrice: '',
     description: '',
+    imageUrl: '',
     available: true,
   }
 }
@@ -106,6 +142,7 @@ export function menuRowToForm(row: MenuRow): MenuFormValues {
     mediumPrice: row.sizes?.medium?.toString() ?? '',
     largePrice: row.sizes?.large?.toString() ?? '',
     description: row.description,
+    imageUrl: row.raw.image_url ?? '',
     available: row.available,
   }
 }
@@ -130,6 +167,7 @@ export function buildMenuItemPayload(
   const body: Record<string, unknown> = {
     name: form.name.trim(),
     description: form.description.trim() || null,
+    image_url: toHttpUrlOrNull(form.imageUrl),
     category_id: categoryId,
     subcategory_id: subId,
     base_price: Number.isFinite(basePrice) ? basePrice : 0,
@@ -139,4 +177,33 @@ export function buildMenuItemPayload(
   if (hasSizes && sizes?.length) body.sizes = sizes
 
   return body
+}
+
+export function buildMenuItemMultipartBody(
+  form: MenuFormValues,
+  categories: ApiCategory[],
+  imageFile: File | null,
+): FormData {
+  const payload = buildMenuItemPayload(form, categories)
+  const fd = new FormData()
+
+  fd.set('name', String(payload.name ?? '').trim())
+  fd.set('category_id', String(payload.category_id ?? ''))
+  fd.set('base_price', String(payload.base_price ?? 0))
+  fd.set('is_available', String(Boolean(payload.is_available)))
+
+  const description = payload.description
+  fd.set('description', description == null ? '' : String(description))
+
+  const sub = payload.subcategory_id
+  fd.set('subcategory_id', sub == null ? '' : String(sub))
+
+  const sizes = payload.sizes
+  fd.set('sizes', Array.isArray(sizes) ? JSON.stringify(sizes) : '')
+
+  if (imageFile) {
+    fd.set('image', imageFile)
+  }
+
+  return fd
 }

@@ -1,13 +1,17 @@
 import type { BusinessHourRow } from '@/lib/api/settings'
 
+function normalizeDayKey(raw: string): string {
+  return raw.trim().toLowerCase()
+}
+
 export const WEEKDAYS = [
-  'Monday',
-  'Tuesday',
-  'Wednesday',
-  'Thursday',
-  'Friday',
-  'Saturday',
-  'Sunday',
+  'monday',
+  'tuesday',
+  'wednesday',
+  'thursday',
+  'friday',
+  'saturday',
+  'sunday',
 ] as const
 
 export type SettingsFormState = {
@@ -24,8 +28,6 @@ export type SettingsFormState = {
   taxRate: string
   deliveryFee: string
   minOrderDelivery: string
-  openTime: string
-  closeTime: string
 }
 
 export const DEFAULT_SETTINGS: SettingsFormState = {
@@ -42,8 +44,6 @@ export const DEFAULT_SETTINGS: SettingsFormState = {
   taxRate: '0',
   deliveryFee: '0',
   minOrderDelivery: '0',
-  openTime: '10:00',
-  closeTime: '22:00',
 }
 
 export function mapStoreToForm(
@@ -122,43 +122,100 @@ export function formPaymentsToStorePatch(form: SettingsFormState): Record<string
   }
 }
 
-export function hoursFromApi(rows: BusinessHourRow[]): { open: string; close: string } {
-  const first = rows.find((r) => r.is_open !== false) ?? rows[0]
-  if (!first) return { open: '10:00', close: '22:00' }
-  const o = (first.open_time ?? '10:00').slice(0, 5)
-  const c = (first.close_time ?? '22:00').slice(0, 5)
-  return { open: o, close: c }
-}
-
-export function formHoursToApiPayload(
-  openTime: string,
-  closeTime: string,
-): BusinessHourRow[] {
-  const ot = openTime.length === 5 ? `${openTime}:00` : openTime
-  const ct = closeTime.length === 5 ? `${closeTime}:00` : closeTime
+export function defaultBusinessHourRows(): BusinessHourRow[] {
   return WEEKDAYS.map((day) => ({
     day,
     is_open: true,
-    open_time: ot,
-    close_time: ct,
+    open_time: '10:00',
+    close_time: '18:00',
   }))
 }
 
+/** Merge API rows into monday–sunday order; fill gaps with sensible defaults. */
+export function normalizeBusinessHoursFromApi(rows: BusinessHourRow[]): BusinessHourRow[] {
+  const byDay = new Map<string, BusinessHourRow>()
+  for (const r of rows) {
+    const key = normalizeDayKey(r.day)
+    if (!key) continue
+    const open = (r.open_time ?? '10:00').slice(0, 5)
+    const close = (r.close_time ?? '18:00').slice(0, 5)
+    byDay.set(key, {
+      day: key,
+      is_open: r.is_open !== false,
+      open_time: open,
+      close_time: close,
+    })
+  }
+  return WEEKDAYS.map((day) => {
+    const hit = byDay.get(day)
+    if (hit) return hit
+    return { day, is_open: true, open_time: '10:00', close_time: '18:00' }
+  })
+}
+
+export function dayLabel(day: string): string {
+  const d = normalizeDayKey(day)
+  if (!d) return day
+  return d.charAt(0).toUpperCase() + d.slice(1)
+}
+
 export function extractDeliveryFromPayments(data: unknown): {
+  taxRate?: string
   deliveryFee?: string
   minOrder?: string
 } {
   if (!data) return {}
-  const arr = Array.isArray(data) ? data : null
-  const row =
-    arr && arr.length > 0 && typeof arr[0] === 'object'
-      ? (arr[0] as Record<string, unknown>)
-      : typeof data === 'object' && data !== null && !Array.isArray(data)
-        ? (data as Record<string, unknown>)
-        : null
+
+  const toObject = (v: unknown): Record<string, unknown> | null =>
+    v && typeof v === 'object' && !Array.isArray(v)
+      ? (v as Record<string, unknown>)
+      : null
+
+  const hasPaymentKeys = (row: Record<string, unknown>): boolean =>
+    'delivery_fee' in row ||
+    'deliveryFee' in row ||
+    'delivery_fee_amount' in row ||
+    'minimum_order_for_free_delivery' in row ||
+    'min_order_free_delivery' in row ||
+    'minOrderDelivery' in row
+
+  const findPaymentRow = (
+    input: unknown,
+    depth = 0,
+  ): Record<string, unknown> | null => {
+    if (depth > 4 || input == null) return null
+    if (Array.isArray(input)) {
+      for (const item of input) {
+        const found = findPaymentRow(item, depth + 1)
+        if (found) return found
+      }
+      return null
+    }
+    const obj = toObject(input)
+    if (!obj) return null
+    if (hasPaymentKeys(obj)) return obj
+
+    // Common API envelope shapes.
+    const directCandidates = [obj.items, obj.data, obj.settings, obj.payment, obj.payments]
+    for (const c of directCandidates) {
+      const found = findPaymentRow(c, depth + 1)
+      if (found) return found
+    }
+
+    // Fallback: search nested object values.
+    for (const v of Object.values(obj)) {
+      const found = findPaymentRow(v, depth + 1)
+      if (found) return found
+    }
+    return null
+  }
+
+  const row = findPaymentRow(data)
   if (!row) return {}
+
   const d =
     row.delivery_fee ?? row.deliveryFee ?? row.delivery_fee_amount
+  const t = row.tax_rate ?? row.taxRate
   const m =
     row.minimum_order_for_free_delivery ??
     row.min_order_free_delivery ??
@@ -170,30 +227,23 @@ export function extractDeliveryFromPayments(data: unknown): {
         ? v
         : undefined
   return {
+    taxRate: numStr(t),
     deliveryFee: numStr(d),
     minOrder: numStr(m),
   }
 }
 
 export function buildPaymentsPutBody(
-  previous: unknown,
+  taxRate: string,
   deliveryFee: string,
   minOrderDelivery: string,
-): unknown {
+): Record<string, number> {
+  const tr = parseFloat(taxRate)
   const df = parseFloat(deliveryFee)
   const mo = parseFloat(minOrderDelivery)
-  const row = {
+  return {
+    tax_rate: Number.isFinite(tr) ? tr : 0,
     delivery_fee: Number.isFinite(df) ? df : 0,
     minimum_order_for_free_delivery: Number.isFinite(mo) ? mo : 0,
   }
-  if (Array.isArray(previous) && previous.length > 0) {
-    const copy = JSON.parse(JSON.stringify(previous)) as Record<string, unknown>[]
-    const first = {
-      ...(typeof copy[0] === 'object' && copy[0] ? copy[0] : {}),
-      ...row,
-    }
-    copy[0] = first
-    return copy
-  }
-  return [row]
 }

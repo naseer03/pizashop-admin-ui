@@ -51,6 +51,7 @@ import {
   menuItemToRow,
   menuRowToForm,
   buildMenuItemPayload,
+  buildMenuItemMultipartBody,
   type MenuFormValues,
   type MenuRow,
 } from "@/lib/menu/map-api"
@@ -70,6 +71,7 @@ export default function MenuPage() {
   const [saving, setSaving] = useState(false)
   const [deleteTarget, setDeleteTarget] = useState<MenuRow | null>(null)
   const [deletePending, setDeletePending] = useState(false)
+  const [uploadFile, setUploadFile] = useState<File | null>(null)
 
   const [formData, setFormData] = useState<MenuFormValues>(() =>
     emptyMenuForm(""),
@@ -132,6 +134,7 @@ export default function MenuPage() {
 
   const resetForm = useCallback(() => {
     setFormData(emptyMenuForm(defaultCategoryId))
+    setUploadFile(null)
     setActionError(null)
   }, [defaultCategoryId])
 
@@ -139,7 +142,7 @@ export default function MenuPage() {
     if (!categories.length) return
     setActionError(null)
     setSaving(true)
-    const payload = buildMenuItemPayload(formData, categories)
+    const payload = buildMenuItemMultipartBody(formData, categories, uploadFile)
     const res = await apiCreateMenuItem(payload)
     setSaving(false)
     if (!res.ok) {
@@ -198,6 +201,7 @@ export default function MenuPage() {
   function openEditDialog(row: MenuRow) {
     setActionError(null)
     setEditingRow(row)
+    setUploadFile(null)
     setFormData(menuRowToForm(row))
   }
 
@@ -290,6 +294,9 @@ export default function MenuPage() {
                 categories={categories}
                 formData={formData}
                 setFormData={setFormData}
+                imageFile={uploadFile}
+                setImageFile={setUploadFile}
+                allowFileUpload
                 onSubmit={() => void handleAddItem()}
                 submitLabel={saving ? "Saving…" : "Add Item"}
                 disabled={saving}
@@ -391,10 +398,10 @@ export default function MenuPage() {
                   <div className="mt-4 flex flex-col gap-2">
                     <div className="flex flex-wrap gap-1">
                       <Badge variant="secondary" className="text-xs">
-                        {item.categoryName}
+                        {item.category.name}
                       </Badge>
                       <Badge variant="outline" className="text-xs">
-                        {item.subcategoryName}
+                        {item.subcategory.name}
                       </Badge>
                     </div>
                     {item.sizes ? (
@@ -479,6 +486,9 @@ export default function MenuPage() {
                           categories={categories}
                           formData={formData}
                           setFormData={setFormData}
+                          imageFile={uploadFile}
+                          setImageFile={setUploadFile}
+                          allowFileUpload={false}
                           onSubmit={() => void handleEditItem()}
                           submitLabel={saving ? "Saving…" : "Save Changes"}
                           disabled={saving}
@@ -515,6 +525,9 @@ function MenuItemForm({
   categories,
   formData,
   setFormData,
+  imageFile,
+  setImageFile,
+  allowFileUpload = true,
   onSubmit,
   submitLabel,
   disabled,
@@ -522,15 +535,31 @@ function MenuItemForm({
   categories: ApiCategory[]
   formData: MenuFormValues
   setFormData: React.Dispatch<React.SetStateAction<MenuFormValues>>
+  imageFile: File | null
+  setImageFile: React.Dispatch<React.SetStateAction<File | null>>
+  allowFileUpload?: boolean
   onSubmit: () => void
   submitLabel: string
   disabled?: boolean
 }) {
+  const [previewImageUrl, setPreviewImageUrl] = useState<string | null>(null)
   const selectedCategory = categories.find(
     (c) => String(c.id) === formData.categoryId,
   )
   const subcategories = selectedCategory?.subcategories ?? []
   const hasSizes = selectedCategory?.has_sizes === true
+
+  useEffect(() => {
+    if (!imageFile) {
+      setPreviewImageUrl(null)
+      return
+    }
+    const objectUrl = URL.createObjectURL(imageFile)
+    setPreviewImageUrl(objectUrl)
+    return () => {
+      URL.revokeObjectURL(objectUrl)
+    }
+  }, [imageFile])
 
   const handleCategoryChange = (value: string) => {
     const nextCat = categories.find((c) => String(c.id) === value)
@@ -540,6 +569,16 @@ function MenuItemForm({
       categoryId: value,
       subcategoryId: firstSub ? String(firstSub.id) : "none",
     })
+  }
+
+  const handleImageFileChange = async (
+    e: React.ChangeEvent<HTMLInputElement>,
+  ) => {
+    const file = e.target.files?.[0]
+    if (!file) return
+
+    setImageFile(file)
+    e.target.value = ""
   }
 
   return (
@@ -691,6 +730,47 @@ function MenuItemForm({
           }
           placeholder="Brief description"
         />
+      </Field>
+
+      <Field>
+        <FieldLabel htmlFor="imageUrl">Image URL</FieldLabel>
+        <Input
+          id="imageUrl"
+          type="text"
+          disabled={disabled}
+          value={formData.imageUrl}
+          onChange={(e) =>
+            setFormData({ ...formData, imageUrl: e.target.value })
+          }
+          placeholder="https://example.com/pizza.jpg"
+        />
+      </Field>
+
+      <Field>
+        <FieldLabel htmlFor="imageFile">Upload Image</FieldLabel>
+        <Input
+          id="imageFile"
+          type="file"
+          accept="image/*"
+          disabled={disabled || !allowFileUpload}
+          onChange={(e) => void handleImageFileChange(e)}
+        />
+        <p className="mt-1 text-xs text-muted-foreground">
+          {allowFileUpload
+            ? "For new items, the selected file is uploaded as multipart field `image`."
+            : "File upload is currently only supported while creating a new item."}
+        </p>
+        {previewImageUrl ? (
+          <div className="mt-2 relative h-28 w-28 overflow-hidden rounded-md border">
+            <Image
+              src={previewImageUrl}
+              alt="Selected upload preview"
+              fill
+              className="object-cover"
+              unoptimized
+            />
+          </div>
+        ) : null}
       </Field>
 
       <div className="flex items-center justify-between py-2">
