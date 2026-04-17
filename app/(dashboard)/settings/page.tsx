@@ -65,6 +65,12 @@ import {
   apiUpdateTopping,
 } from "@/lib/api/toppings"
 import {
+  apiCreateCrust,
+  apiDeleteCrust,
+  apiListCrusts,
+  apiUpdateCrust,
+} from "@/lib/api/crusts"
+import {
   apiGetStore,
   apiPutStore,
   apiGetNotifications,
@@ -73,6 +79,7 @@ import {
   apiPutBusinessHours,
   apiGetPayments,
   apiPutPayments,
+  type BusinessHourRow,
 } from "@/lib/api/settings"
 import {
   apiCreateCategory,
@@ -89,9 +96,9 @@ import {
   formNotificationsToApi,
   mergeStorePut,
   formGeneralToStorePatch,
-  formPaymentsToStorePatch,
-  hoursFromApi,
-  formHoursToApiPayload,
+  defaultBusinessHourRows,
+  normalizeBusinessHoursFromApi,
+  dayLabel,
   buildPaymentsPutBody,
   extractDeliveryFromPayments,
   type SettingsFormState,
@@ -125,15 +132,6 @@ interface Category {
   slug?: string
   subcategories: Subcategory[]
 }
-
-const initialCrusts: Crust[] = [
-  { id: "1", name: "Hand Tossed", price: 0.00, available: true },
-  { id: "2", name: "Thin Crust", price: 0.00, available: true },
-  { id: "3", name: "Deep Dish", price: 2.00, available: true },
-  { id: "4", name: "Stuffed Crust", price: 2.50, available: true },
-  { id: "5", name: "Gluten Free", price: 3.00, available: true },
-  { id: "6", name: "Cauliflower", price: 3.50, available: false },
-]
 
 function apiCategoryToUi(c: ApiCategory): Category {
   return {
@@ -225,6 +223,45 @@ function mapApiToppingsToUi(rawData: unknown): Topping[] {
     .filter((t): t is Topping => t != null)
 }
 
+function mapApiCrustToUi(raw: unknown): Crust | null {
+  if (!raw || typeof raw !== "object") return null
+  const o = raw as Record<string, unknown>
+
+  const name =
+    (o.name ?? o.crust_name ?? o.title ?? o.display_name ?? "").toString().trim()
+  if (!name) return null
+
+  const id = o.id ?? o.crust_id ?? o.crustId ?? o.item_id ?? o.uuid ?? name
+
+  const priceRaw =
+    o.price ??
+    o.additional_price ??
+    o.additionalPrice ??
+    o.extra_price ??
+    o.extraPrice ??
+    o.amount ??
+    o.cost
+  const price = toFiniteNumber(priceRaw) ?? 0
+
+  const availableRaw =
+    o.available ?? o.is_available ?? o.isAvailable ?? o.active ?? o.enabled
+  const available = toBoolean(availableRaw) ?? true
+
+  return {
+    id: String(id),
+    name,
+    price,
+    available,
+  }
+}
+
+function mapApiCrustsToUi(rawData: unknown): Crust[] {
+  const arr = Array.isArray(rawData) ? rawData : []
+  return arr
+    .map(mapApiCrustToUi)
+    .filter((c): c is Crust => c != null)
+}
+
 export default function SettingsPage() {
   const [categories, setCategories] = useState<Category[]>([])
   const [storeSnapshot, setStoreSnapshot] = useState<Record<string, unknown>>({})
@@ -249,6 +286,7 @@ export default function SettingsPage() {
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false)
   const [deletePending, setDeletePending] = useState(false)
   const [toppingBusy, setToppingBusy] = useState(false)
+  const [crustBusy, setCrustBusy] = useState(false)
   const [itemToDelete, setItemToDelete] = useState<{
     type: "category" | "subcategory" | "topping" | "crust"
     categoryId?: string
@@ -287,25 +325,29 @@ export default function SettingsPage() {
   const [toppingFilter, setToppingFilter] = useState<string>("all")
 
   // Crusts state
-  const [crusts, setCrusts] = useState<Crust[]>(initialCrusts)
+  const [crusts, setCrusts] = useState<Crust[]>([])
   const [crustDialogOpen, setCrustDialogOpen] = useState(false)
   const [editingCrust, setEditingCrust] = useState<Crust | null>(null)
   const [crustForm, setCrustForm] = useState({ name: "", price: "" })
+  const [businessHours, setBusinessHours] = useState<BusinessHourRow[]>(() =>
+    defaultBusinessHourRows(),
+  )
 
   const loadAll = useCallback(async () => {
     setLoading(true)
     setLoadError(null)
 
-    const [st, no, bh, pay, cat, toppingsRes] = await Promise.all([
+    const [st, no, bh, pay, cat, toppingsRes, crustsRes] = await Promise.all([
       apiGetStore(),
       apiGetNotifications(),
       apiGetBusinessHours(),
       apiGetPayments(),
       apiListCategories(),
       apiListToppings(),
+      apiListCrusts(),
     ])
 
-    const batch = [st, no, bh, pay, cat, toppingsRes]
+    const batch = [st, no, bh, pay, cat, toppingsRes, crustsRes]
     if (batch.some((r) => isUnauthorizedApiError(r))) {
       setLoading(false)
       return
@@ -325,14 +367,18 @@ export default function SettingsPage() {
       next = { ...next, ...mapNotificationsToForm(no.data, next) }
     }
 
-    if (bh.ok && bh.data.length > 0) {
-      const { open, close } = hoursFromApi(bh.data)
-      next = { ...next, openTime: open, closeTime: close }
+    if (bh.ok) {
+      setBusinessHours(
+        bh.data.length > 0
+          ? normalizeBusinessHoursFromApi(bh.data)
+          : defaultBusinessHourRows(),
+      )
     }
 
     if (pay.ok) {
       setPaymentsSnapshot(pay.data)
       const ex = extractDeliveryFromPayments(pay.data)
+      if (ex.taxRate != null) next = { ...next, taxRate: ex.taxRate }
       if (ex.deliveryFee != null) next = { ...next, deliveryFee: ex.deliveryFee }
       if (ex.minOrder != null)
         next = { ...next, minOrderDelivery: ex.minOrder }
@@ -358,12 +404,24 @@ export default function SettingsPage() {
       setToppings([])
     }
 
+    if (crustsRes.ok) {
+      setCrusts(mapApiCrustsToUi(crustsRes.data))
+    } else {
+      setCrusts([])
+    }
+
     setLoading(false)
   }, [])
 
   async function refreshToppings() {
     const res = await apiListToppings()
     if (res.ok) setToppings(mapApiToppingsToUi(res.data))
+    else if (!isUnauthorizedApiError(res)) setLoadError(res.message)
+  }
+
+  async function refreshCrusts() {
+    const res = await apiListCrusts()
+    if (res.ok) setCrusts(mapApiCrustsToUi(res.data))
     else if (!isUnauthorizedApiError(res)) setLoadError(res.message)
   }
 
@@ -403,20 +461,8 @@ export default function SettingsPage() {
   async function handleSavePayments() {
     setSaving("payments")
     setLoadError(null)
-    const storePatch = mergeStorePut(
-      storeSnapshot,
-      formPaymentsToStorePatch(settings),
-    )
-    const resStore = await apiPutStore(storePatch)
-    if (!resStore.ok) {
-      setSaving(null)
-      if (!isUnauthorizedApiError(resStore)) setLoadError(resStore.message)
-      return
-    }
-    setStoreSnapshot(storePatch)
-
     const payBody = buildPaymentsPutBody(
-      paymentsSnapshot,
+      settings.taxRate,
       settings.deliveryFee,
       settings.minOrderDelivery,
     )
@@ -434,7 +480,11 @@ export default function SettingsPage() {
   async function handleSaveHours() {
     setSaving("hours")
     setLoadError(null)
-    const payload = formHoursToApiPayload(settings.openTime, settings.closeTime)
+    const payload = businessHours.map((r) => ({
+      day: r.day.trim().toLowerCase(),
+      open_time: (r.open_time ?? "10:00").slice(0, 5),
+      close_time: (r.close_time ?? "18:00").slice(0, 5),
+    }))
     const res = await apiPutBusinessHours(payload)
     setSaving(null)
     if (!res.ok) {
@@ -443,6 +493,12 @@ export default function SettingsPage() {
     }
     await loadAll()
     toast({ title: "Saved", description: "Business hours were updated." })
+  }
+
+  const updateBusinessHour = (index: number, patch: Partial<BusinessHourRow>) => {
+    setBusinessHours((prev) =>
+      prev.map((row, i) => (i === index ? { ...row, ...patch } : row)),
+    )
   }
 
   const toggleCategory = (categoryId: string) => {
@@ -574,7 +630,12 @@ export default function SettingsPage() {
         return
       }
     } else if (itemToDelete.type === "crust" && itemToDelete.itemId) {
-      setCrusts((prev) => prev.filter((c) => c.id !== itemToDelete.itemId))
+      const res = await apiDeleteCrust(itemToDelete.itemId)
+      setDeletePending(false)
+      if (!res.ok) {
+        if (!isUnauthorizedApiError(res)) setLoadError(res.message)
+        return
+      }
     }
     setDeleteDialogOpen(false)
     setItemToDelete(null)
@@ -585,6 +646,9 @@ export default function SettingsPage() {
     }
     if (deleteType === "topping") {
       await refreshToppings()
+    }
+    if (deleteType === "crust") {
+      await refreshCrusts()
     }
   }
   // Topping handlers
@@ -686,33 +750,66 @@ export default function SettingsPage() {
     setCrustDialogOpen(true)
   }
 
-  const handleSaveCrust = () => {
-    if (!crustForm.name.trim()) return
+  const handleSaveCrust = async () => {
+    const name = crustForm.name.trim()
+    if (!name) return
+    const priceNum = Number.parseFloat(crustForm.price || "0")
+    if (!Number.isFinite(priceNum)) return
 
-    if (editingCrust) {
-      setCrusts((prev) =>
-        prev.map((c) =>
-          c.id === editingCrust.id
-            ? { ...c, name: crustForm.name, price: parseFloat(crustForm.price || "0") }
-            : c
-        )
-      )
-    } else {
-      const newCrust: Crust = {
-        id: Date.now().toString(),
-        name: crustForm.name,
-        price: parseFloat(crustForm.price || "0"),
-        available: true,
-      }
-      setCrusts((prev) => [...prev, newCrust])
+    setCrustBusy(true)
+    setLoadError(null)
+
+    const payload = {
+      name,
+      price: priceNum,
+      is_available: editingCrust?.available ?? true,
+      sort_order: 0,
     }
+
+    const res = editingCrust
+      ? await apiUpdateCrust(editingCrust.id, payload)
+      : await apiCreateCrust(payload)
+
+    setCrustBusy(false)
+    if (!res.ok) {
+      if (!isUnauthorizedApiError(res)) setLoadError(res.message)
+      return
+    }
+
     setCrustDialogOpen(false)
+    setEditingCrust(null)
+    await refreshCrusts()
+    toast({
+      title: "Saved",
+      description: editingCrust ? "Crust was updated." : "Crust was added.",
+    })
   }
 
-  const toggleCrustAvailability = (id: string) => {
+  const toggleCrustAvailability = async (id: string) => {
+    if (crustBusy) return
+    const current = crusts.find((c) => c.id === id)
+    if (!current) return
+    const nextAvailable = !current.available
+
+    setCrustBusy(true)
+    setLoadError(null)
+
     setCrusts((prev) =>
-      prev.map((c) => (c.id === id ? { ...c, available: !c.available } : c))
+      prev.map((c) => (c.id === id ? { ...c, available: nextAvailable } : c)),
     )
+
+    const res = await apiUpdateCrust(id, {
+      name: current.name,
+      price: current.price,
+      is_available: nextAvailable,
+      sort_order: 0,
+    })
+
+    setCrustBusy(false)
+    if (!res.ok) {
+      if (!isUnauthorizedApiError(res)) setLoadError(res.message)
+      await refreshCrusts()
+    }
   }
   return (
     <DashboardLayout>
@@ -1048,51 +1145,63 @@ export default function SettingsPage() {
                       <CardDescription>
                         <code className="text-xs">
                           GET/PUT /v1/settings/business-hours
-                        </code>{" "}
-                        — same open/close applied to every day.
+                        </code>
+                        . Set open hours per weekday; toggle off for closed days.
                       </CardDescription>
                     </div>
                   </div>
                 </CardHeader>
                 <CardContent>
-                  <FieldGroup>
-                    <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
-                      <Field>
-                        <FieldLabel htmlFor="openTime">Opening Time</FieldLabel>
-                        <Input
-                          id="openTime"
-                          type="time"
-                          value={settings.openTime}
-                          onChange={(e) =>
-                            setSettings({ ...settings, openTime: e.target.value })
-                          }
-                        />
-                      </Field>
-                      <Field>
-                        <FieldLabel htmlFor="closeTime">Closing Time</FieldLabel>
-                        <Input
-                          id="closeTime"
-                          type="time"
-                          value={settings.closeTime}
-                          onChange={(e) =>
-                            setSettings({ ...settings, closeTime: e.target.value })
-                          }
-                        />
-                      </Field>
+                  <div className="rounded-lg border">
+                    <div className="grid grid-cols-[1fr_auto_1fr_1fr] gap-2 border-b bg-muted/50 px-3 py-2 text-xs font-medium text-muted-foreground sm:px-4">
+                      <span>Day</span>
+                      <span className="text-center">Open</span>
+                      <span>Opens</span>
+                      <span>Closes</span>
                     </div>
-                  </FieldGroup>
-                  <div className="mt-6 rounded-lg border bg-muted/50 p-4">
-                    <p className="text-sm text-muted-foreground">
-                      Your store is currently set to operate from{" "}
-                      <span className="font-medium text-foreground">
-                        {settings.openTime}
-                      </span>{" "}
-                      to{" "}
-                      <span className="font-medium text-foreground">
-                        {settings.closeTime}
-                      </span>{" "}
-                      daily (all days).
-                    </p>
+                    {businessHours.map((row, i) => {
+                      const openVal = (row.open_time ?? "10:00").slice(0, 5)
+                      const closeVal = (row.close_time ?? "18:00").slice(0, 5)
+                      const isOpen = row.is_open !== false
+                      return (
+                        <div
+                          key={row.day}
+                          className="grid grid-cols-[1fr_auto_1fr_1fr] items-center gap-2 border-b px-3 py-3 last:border-0 sm:px-4"
+                        >
+                          <span className="font-medium text-foreground">
+                            {dayLabel(row.day)}
+                          </span>
+                          <div className="flex justify-center">
+                            <Switch
+                              checked={isOpen}
+                              onCheckedChange={(checked) =>
+                                updateBusinessHour(i, { is_open: Boolean(checked) })
+                              }
+                            />
+                          </div>
+                          <Input
+                            id={`open-${row.day}`}
+                            type="time"
+                            disabled={!isOpen}
+                            value={openVal}
+                            onChange={(e) =>
+                              updateBusinessHour(i, { open_time: e.target.value })
+                            }
+                            className="min-w-0"
+                          />
+                          <Input
+                            id={`close-${row.day}`}
+                            type="time"
+                            disabled={!isOpen}
+                            value={closeVal}
+                            onChange={(e) =>
+                              updateBusinessHour(i, { close_time: e.target.value })
+                            }
+                            className="min-w-0"
+                          />
+                        </div>
+                      )
+                    })}
                   </div>
                   <Button
                     className="mt-6"
@@ -1453,7 +1562,8 @@ export default function SettingsPage() {
                         <span className="text-sm text-muted-foreground">Available</span>
                         <Switch
                           checked={crust.available}
-                          onCheckedChange={() => toggleCrustAvailability(crust.id)}
+                          disabled={crustBusy}
+                          onCheckedChange={() => void toggleCrustAvailability(crust.id)}
                         />
                       </div>
                     </div>
@@ -1679,7 +1789,10 @@ export default function SettingsPage() {
               <Button variant="outline" onClick={() => setCrustDialogOpen(false)}>
                 Cancel
               </Button>
-              <Button onClick={handleSaveCrust} disabled={!crustForm.name.trim()}>
+              <Button
+                onClick={() => void handleSaveCrust()}
+                disabled={crustBusy || !crustForm.name.trim()}
+              >
                 {editingCrust ? "Save Changes" : "Add Crust"}
               </Button>
             </DialogFooter>
