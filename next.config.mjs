@@ -13,6 +13,14 @@ const nextConfig = {
       },
     ],
   },
+  async rewrites() {
+    return [
+      {
+        source: '/v1/:path*',
+        destination: 'https://pizzaapi.lefruit.in/v1/:path*',
+      },
+    ]
+  },
 }
 
 export default nextConfig
