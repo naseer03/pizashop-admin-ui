@@ -64,6 +64,12 @@ interface Employee {
   status: "active" | "inactive"
   phone: string
   joinDate: string
+  hourlyRate: number
+  dateOfBirth: string
+  address: string
+  emergencyContactName: string
+  emergencyContactPhone: string
+  schedule: Array<Record<string, unknown>>
 }
 
 interface RoleOption {
@@ -120,6 +126,7 @@ function mapEmployee(e: ApiEmployee, roleById: Map<number, RoleOption>): Employe
   const rawStatus = e.status?.toLowerCase() ?? "active"
   const status: "active" | "inactive" = rawStatus === "inactive" ? "inactive" : "active"
   const joinDateRaw = (e.hire_date || e.created_at || "").slice(0, 10)
+  const dateOfBirthRaw = (e.date_of_birth || "").slice(0, 10)
   return {
     id,
     name,
@@ -129,6 +136,12 @@ function mapEmployee(e: ApiEmployee, roleById: Map<number, RoleOption>): Employe
     status,
     phone: e.phone?.trim() || "",
     joinDate: joinDateRaw || new Date().toISOString().split("T")[0],
+    hourlyRate: toNumber(e.hourly_rate) ?? 0,
+    dateOfBirth: dateOfBirthRaw,
+    address: e.address?.trim() || "",
+    emergencyContactName: e.emergency_contact_name?.trim() || "",
+    emergencyContactPhone: e.emergency_contact_phone?.trim() || "",
+    schedule: Array.isArray(e.schedule) ? e.schedule : [],
   }
 }
 
@@ -152,6 +165,13 @@ export default function EmployeesPage() {
     roleId: "",
     status: "active" as "active" | "inactive",
     phone: "",
+    hourlyRate: "0",
+    hireDate: new Date().toISOString().slice(0, 10),
+    dateOfBirth: "",
+    address: "",
+    emergencyContactName: "",
+    emergencyContactPhone: "",
+    password: "",
   })
 
   const roleById = useMemo(() => {
@@ -207,8 +227,13 @@ export default function EmployeesPage() {
     const trimmedName = formData.name.trim()
     const trimmedEmail = formData.email.trim()
     const roleId = Number(formData.roleId)
+    const hourlyRate = Number(formData.hourlyRate || "0")
     if (!trimmedName || !trimmedEmail || !Number.isFinite(roleId) || roleId <= 0) {
       setActionError("Name, email and role are required.")
+      return
+    }
+    if (!Number.isFinite(hourlyRate) || hourlyRate < 0) {
+      setActionError("Hourly rate must be a valid positive number.")
       return
     }
     setActionError(null)
@@ -220,7 +245,14 @@ export default function EmployeesPage() {
       email: trimmedEmail,
       phone: formData.phone.trim() || null,
       role_id: roleId,
-      hire_date: new Date().toISOString().slice(0, 10),
+      hourly_rate: hourlyRate,
+      hire_date: formData.hireDate || new Date().toISOString().slice(0, 10),
+      date_of_birth: formData.dateOfBirth || new Date().toISOString().slice(0, 10),
+      address: formData.address.trim(),
+      emergency_contact_name: formData.emergencyContactName.trim(),
+      emergency_contact_phone: formData.emergencyContactPhone.trim(),
+      schedule: [],
+      password: formData.password.trim(),
     })
     if (!res.ok) {
       setSaving(false)
@@ -248,21 +280,38 @@ export default function EmployeesPage() {
     const trimmedName = formData.name.trim()
     const trimmedEmail = formData.email.trim()
     const roleId = Number(formData.roleId)
+    const hourlyRate = Number(formData.hourlyRate || "0")
     if (!trimmedName || !trimmedEmail || !Number.isFinite(roleId) || roleId <= 0) {
       setActionError("Name, email and role are required.")
+      return
+    }
+    if (!Number.isFinite(hourlyRate) || hourlyRate < 0) {
+      setActionError("Hourly rate must be a valid positive number.")
       return
     }
     setActionError(null)
     setSaving(true)
     const { first, last } = splitName(trimmedName)
-    const res = await apiUpdateEmployee(editingEmployee.id, {
+    const updatePayload: Parameters<typeof apiUpdateEmployee>[1] = {
       first_name: first,
       last_name: last,
       email: trimmedEmail,
       phone: formData.phone.trim() || null,
       role_id: roleId,
-      hire_date: editingEmployee.joinDate,
-    })
+      hourly_rate: hourlyRate,
+      hire_date: formData.hireDate || editingEmployee.joinDate,
+      date_of_birth: formData.dateOfBirth || editingEmployee.dateOfBirth || "",
+      address: formData.address.trim() || editingEmployee.address,
+      emergency_contact_name:
+        formData.emergencyContactName.trim() || editingEmployee.emergencyContactName,
+      emergency_contact_phone:
+        formData.emergencyContactPhone.trim() || editingEmployee.emergencyContactPhone,
+      schedule: editingEmployee.schedule,
+    }
+    const nextPassword = formData.password.trim()
+    if (nextPassword) updatePayload.password = nextPassword
+
+    const res = await apiUpdateEmployee(editingEmployee.id, updatePayload)
     if (!res.ok) {
       setSaving(false)
       if (!isUnauthorizedApiError(res)) setActionError(res.message)
@@ -325,6 +374,13 @@ export default function EmployeesPage() {
       roleId: roles[0] ? String(roles[0].id) : "",
       status: "active",
       phone: "",
+      hourlyRate: "0",
+      hireDate: new Date().toISOString().slice(0, 10),
+      dateOfBirth: "",
+      address: "",
+      emergencyContactName: "",
+      emergencyContactPhone: "",
+      password: "",
     })
   }
 
@@ -337,6 +393,13 @@ export default function EmployeesPage() {
       roleId: String(emp.roleId),
       status: emp.status,
       phone: emp.phone,
+      hourlyRate: String(emp.hourlyRate),
+      hireDate: emp.joinDate,
+      dateOfBirth: emp.dateOfBirth,
+      address: emp.address,
+      emergencyContactName: emp.emergencyContactName,
+      emergencyContactPhone: emp.emergencyContactPhone,
+      password: "",
     })
   }
 
@@ -412,7 +475,7 @@ export default function EmployeesPage() {
                 Add Employee
               </Button>
             </DialogTrigger>
-            <DialogContent>
+            <DialogContent className="sm:max-w-2xl">
               <DialogHeader>
                 <DialogTitle>Add Employee</DialogTitle>
                 <DialogDescription>
@@ -593,7 +656,7 @@ export default function EmployeesPage() {
                               <Pencil className="h-4 w-4" />
                             </Button>
                           </DialogTrigger>
-                          <DialogContent>
+                          <DialogContent className="sm:max-w-2xl">
                             <DialogHeader>
 <DialogTitle>Edit Employee</DialogTitle>
                         <DialogDescription>
@@ -650,6 +713,13 @@ function EmployeeForm({
     roleId: string
     status: "active" | "inactive"
     phone: string
+    hourlyRate: string
+    hireDate: string
+    dateOfBirth: string
+    address: string
+    emergencyContactName: string
+    emergencyContactPhone: string
+    password: string
   }
   setFormData: React.Dispatch<
     React.SetStateAction<{
@@ -658,6 +728,13 @@ function EmployeeForm({
       roleId: string
       status: "active" | "inactive"
       phone: string
+      hourlyRate: string
+      hireDate: string
+      dateOfBirth: string
+      address: string
+      emergencyContactName: string
+      emergencyContactPhone: string
+      password: string
     }>
   >
   onSubmit: () => Promise<void> | void
@@ -666,7 +743,7 @@ function EmployeeForm({
   actionError: string | null
 }) {
   return (
-    <FieldGroup className="mt-4">
+    <FieldGroup className="mt-4 grid gap-4 md:grid-cols-2">
       <Field>
         <FieldLabel htmlFor="name">Full Name</FieldLabel>
         <Input
@@ -693,6 +770,73 @@ function EmployeeForm({
           value={formData.phone}
           onChange={(e) => setFormData({ ...formData, phone: e.target.value })}
           placeholder="+1 234 567 8901"
+        />
+      </Field>
+      <Field>
+        <FieldLabel htmlFor="hourlyRate">Hourly Rate</FieldLabel>
+        <Input
+          id="hourlyRate"
+          type="number"
+          min="0"
+          step="0.01"
+          value={formData.hourlyRate}
+          onChange={(e) => setFormData({ ...formData, hourlyRate: e.target.value })}
+          placeholder="0"
+        />
+      </Field>
+      <Field>
+        <FieldLabel htmlFor="hireDate">Hire Date</FieldLabel>
+        <Input
+          id="hireDate"
+          type="date"
+          value={formData.hireDate}
+          onChange={(e) => setFormData({ ...formData, hireDate: e.target.value })}
+        />
+      </Field>
+      <Field>
+        <FieldLabel htmlFor="dateOfBirth">Date of Birth</FieldLabel>
+        <Input
+          id="dateOfBirth"
+          type="date"
+          value={formData.dateOfBirth}
+          onChange={(e) => setFormData({ ...formData, dateOfBirth: e.target.value })}
+        />
+      </Field>
+      <Field>
+        <FieldLabel htmlFor="address">Address</FieldLabel>
+        <Input
+          id="address"
+          value={formData.address}
+          onChange={(e) => setFormData({ ...formData, address: e.target.value })}
+          placeholder="Street, city, state"
+        />
+      </Field>
+      <Field>
+        <FieldLabel htmlFor="emergencyContactName">Emergency Contact Name</FieldLabel>
+        <Input
+          id="emergencyContactName"
+          value={formData.emergencyContactName}
+          onChange={(e) => setFormData({ ...formData, emergencyContactName: e.target.value })}
+          placeholder="Contact person"
+        />
+      </Field>
+      <Field>
+        <FieldLabel htmlFor="emergencyContactPhone">Emergency Contact Phone</FieldLabel>
+        <Input
+          id="emergencyContactPhone"
+          value={formData.emergencyContactPhone}
+          onChange={(e) => setFormData({ ...formData, emergencyContactPhone: e.target.value })}
+          placeholder="+1 234 567 8901"
+        />
+      </Field>
+      <Field>
+        <FieldLabel htmlFor="password">Password</FieldLabel>
+        <Input
+          id="password"
+          type="password"
+          value={formData.password}
+          onChange={(e) => setFormData({ ...formData, password: e.target.value })}
+          placeholder="Set employee login password"
         />
       </Field>
       <Field>
@@ -730,8 +874,8 @@ function EmployeeForm({
           </SelectContent>
         </Select>
       </Field>
-      {actionError && <p className="text-sm text-destructive">{actionError}</p>}
-      <DialogFooter className="mt-4">
+      {actionError && <p className="text-sm text-destructive md:col-span-2">{actionError}</p>}
+      <DialogFooter className="mt-4 md:col-span-2">
         <Button onClick={onSubmit} className="w-full" disabled={submitting}>
           {submitting ? "Saving..." : submitLabel}
         </Button>

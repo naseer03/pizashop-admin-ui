@@ -204,7 +204,22 @@ function mapApiToppingToUi(raw: unknown): Topping | null {
     o.available ?? o.is_available ?? o.isAvailable ?? o.active ?? o.enabled
   const available = toBoolean(availableRaw) ?? true
 
-  const categoryRaw = o.category ?? o.topping_category ?? o.toppingCategory ?? o.type
+  const categoryFromNestedObject =
+    o.category && typeof o.category === "object"
+      ? (o.category as Record<string, unknown>).name ??
+        (o.category as Record<string, unknown>).slug ??
+        (o.category as Record<string, unknown>).id
+      : null
+
+  const categoryRaw =
+    categoryFromNestedObject ??
+    o.category ??
+    o.topping_category ??
+    o.toppingCategory ??
+    o.type ??
+    o.category_name ??
+    o.categoryName ??
+    o.category_id
   const category = normalizeToppingCategory(categoryRaw)
 
   return {
@@ -323,6 +338,22 @@ export default function SettingsPage() {
     }
   }, [toppingCategoryOptions, toppingForm.category])
   const [toppingFilter, setToppingFilter] = useState<string>("all")
+
+  const resolveToppingCategoryId = useCallback(
+    (categoryValue: string): number | null => {
+      const match = categories.find((c) => {
+        if (c.id === categoryValue) return true
+        const fromSlug = normalizeToppingCategory(c.slug)
+        if (fromSlug && fromSlug === categoryValue) return true
+        const fromName = normalizeToppingCategory(c.name)
+        return fromName === categoryValue
+      })
+      if (!match) return null
+      const parsed = Number.parseInt(match.id, 10)
+      return Number.isFinite(parsed) ? parsed : null
+    },
+    [categories],
+  )
 
   // Crusts state
   const [crusts, setCrusts] = useState<Crust[]>([])
@@ -673,13 +704,18 @@ export default function SettingsPage() {
     if (!name || !toppingForm.category || !toppingForm.price.trim()) return
     const priceNum = Number.parseFloat(toppingForm.price)
     if (!Number.isFinite(priceNum)) return
+    const categoryId = resolveToppingCategoryId(toppingForm.category)
+    if (!categoryId) {
+      setLoadError("Please select a valid topping category.")
+      return
+    }
 
     setToppingBusy(true)
     setLoadError(null)
 
     const payload = {
       name,
-      category: toppingForm.category,
+      category_id: categoryId,
       price: priceNum,
       is_available: editingTopping?.available ?? true,
       sort_order: 0,
@@ -709,6 +745,11 @@ export default function SettingsPage() {
     const current = toppings.find((t) => t.id === id)
     if (!current) return
     const nextAvailable = !current.available
+    const categoryId = resolveToppingCategoryId(current.category)
+    if (!categoryId) {
+      setLoadError("Unable to update topping: invalid category.")
+      return
+    }
 
     setToppingBusy(true)
     setLoadError(null)
@@ -720,7 +761,7 @@ export default function SettingsPage() {
 
     const res = await apiUpdateTopping(id, {
       name: current.name,
-      category: current.category,
+      category_id: categoryId,
       price: current.price,
       is_available: nextAvailable,
       sort_order: 0,

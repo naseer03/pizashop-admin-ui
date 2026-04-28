@@ -10,7 +10,13 @@ export type ApiEmployee = {
   phone?: string | null
   status?: string | null
   role_id?: unknown
+  hourly_rate?: unknown
   hire_date?: string | null
+  date_of_birth?: string | null
+  address?: string | null
+  emergency_contact_name?: string | null
+  emergency_contact_phone?: string | null
+  schedule?: Array<Record<string, unknown>> | null
   created_at?: string | null
   role?: { id?: unknown; name?: string | null } | null
 }
@@ -62,7 +68,14 @@ export async function apiCreateEmployee(body: {
   email: string
   phone?: string | null
   role_id: number
+  hourly_rate: number
   hire_date: string
+  date_of_birth: string
+  address: string
+  emergency_contact_name: string
+  emergency_contact_phone: string
+  schedule: Array<Record<string, unknown>>
+  password: string
 }) {
   return pizzaApiFetch<unknown>('v1/employees', {
     method: 'POST',
@@ -79,7 +92,14 @@ export async function apiUpdateEmployee(
     email: string
     phone?: string | null
     role_id: number
+    hourly_rate: number
     hire_date: string
+    date_of_birth: string
+    address: string
+    emergency_contact_name: string
+    emergency_contact_phone: string
+    schedule: Array<Record<string, unknown>>
+    password?: string
   },
 ) {
   return pizzaApiFetch<unknown>(`v1/employees/${employeeId}`, {
