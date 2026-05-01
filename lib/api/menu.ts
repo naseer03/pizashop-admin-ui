@@ -101,12 +101,17 @@ export async function apiCreateMenuItem(body: Record<string, unknown> | FormData
 
 export async function apiUpdateMenuItem(
   itemId: number,
-  body: Record<string, unknown>,
+  body: Record<string, unknown> | FormData,
 ) {
+  const isMultipart = typeof FormData !== 'undefined' && body instanceof FormData
   return pizzaApiFetch<unknown>(`v1/menu-items/${itemId}`, {
     method: 'PUT',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
+    ...(isMultipart
+      ? { body }
+      : {
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body),
+        }),
   })
 }
 

@@ -1,6 +1,13 @@
 "use client"
 
-import { useCallback, useEffect, useMemo, useState } from "react"
+import {
+  useCallback,
+  useEffect,
+  useId,
+  useMemo,
+  useRef,
+  useState,
+} from "react"
 import { DashboardLayout } from "@/components/dashboard/dashboard-layout"
 import { Card, CardContent } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
@@ -50,7 +57,6 @@ import {
   emptyMenuForm,
   menuItemToRow,
   menuRowToForm,
-  buildMenuItemPayload,
   buildMenuItemMultipartBody,
   type MenuFormValues,
   type MenuRow,
@@ -76,6 +82,11 @@ export default function MenuPage() {
   const [formData, setFormData] = useState<MenuFormValues>(() =>
     emptyMenuForm(""),
   )
+
+  const formDataRef = useRef(formData)
+  const uploadFileRef = useRef<File | null>(null)
+  formDataRef.current = formData
+  uploadFileRef.current = uploadFile
 
   const refresh = useCallback(async () => {
     setLoading(true)
@@ -104,9 +115,17 @@ export default function MenuPage() {
 
   useEffect(() => {
     if (!categories.length) return
-    setFormData((f) =>
-      f.categoryId ? f : { ...f, categoryId: String(categories[0].id) },
-    )
+    setFormData((f) => {
+      if (f.categoryId) return f
+      const first = categories[0]
+      const id = String(first.id)
+      return {
+        ...f,
+        categoryId: id,
+        sizesEnabled:
+          first.has_sizes === true ? true : f.sizesEnabled,
+      }
+    })
   }, [categories])
 
   const defaultCategoryId = categories[0] ? String(categories[0].id) : ""
@@ -142,7 +161,11 @@ export default function MenuPage() {
     if (!categories.length) return
     setActionError(null)
     setSaving(true)
-    const payload = buildMenuItemMultipartBody(formData, categories, uploadFile)
+    const payload = buildMenuItemMultipartBody(
+      formDataRef.current,
+      categories,
+      uploadFileRef.current,
+    )
     const res = await apiCreateMenuItem(payload)
     setSaving(false)
     if (!res.ok) {
@@ -159,7 +182,11 @@ export default function MenuPage() {
     if (!editingRow || !categories.length) return
     setActionError(null)
     setSaving(true)
-    const payload = buildMenuItemPayload(formData, categories)
+    const payload = buildMenuItemMultipartBody(
+      formDataRef.current,
+      categories,
+      uploadFileRef.current,
+    )
     const res = await apiUpdateMenuItem(editingRow.id, payload)
     setSaving(false)
     if (!res.ok) {
@@ -430,6 +457,14 @@ export default function MenuPage() {
                             </span>
                           </>
                         ) : null}
+                        {item.sizes.extraLarge != null ? (
+                          <>
+                            <span className="text-muted-foreground">XL:</span>
+                            <span className="font-medium">
+                              ${item.sizes.extraLarge.toFixed(2)}
+                            </span>
+                          </>
+                        ) : null}
                       </div>
                     ) : (
                       <p className="text-lg font-bold text-primary">
@@ -488,7 +523,7 @@ export default function MenuPage() {
                           setFormData={setFormData}
                           imageFile={uploadFile}
                           setImageFile={setUploadFile}
-                          allowFileUpload={false}
+                          allowFileUpload
                           onSubmit={() => void handleEditItem()}
                           submitLabel={saving ? "Saving…" : "Save Changes"}
                           disabled={saving}
@@ -542,12 +577,16 @@ function MenuItemForm({
   submitLabel: string
   disabled?: boolean
 }) {
+  const formInstanceId = useId()
+  const fieldId = (name: string) => `${formInstanceId}-${name}`
   const [previewImageUrl, setPreviewImageUrl] = useState<string | null>(null)
   const selectedCategory = categories.find(
     (c) => String(c.id) === formData.categoryId,
   )
   const subcategories = selectedCategory?.subcategories ?? []
-  const hasSizes = selectedCategory?.has_sizes === true
+  const categoryRequiresSizes = selectedCategory?.has_sizes === true
+  const showSizePricing =
+    categoryRequiresSizes || formData.sizesEnabled
 
   useEffect(() => {
     if (!imageFile) {
@@ -568,6 +607,8 @@ function MenuItemForm({
       ...formData,
       categoryId: value,
       subcategoryId: firstSub ? String(firstSub.id) : "none",
+      sizesEnabled:
+        nextCat?.has_sizes === true ? true : formData.sizesEnabled,
     })
   }
 
@@ -584,9 +625,9 @@ function MenuItemForm({
   return (
     <FieldGroup className="mt-4 max-h-[60vh] overflow-y-auto pr-2">
       <Field>
-        <FieldLabel htmlFor="name">Name</FieldLabel>
+        <FieldLabel htmlFor={fieldId("name")}>Name</FieldLabel>
         <Input
-          id="name"
+          id={fieldId("name")}
           value={formData.name}
           disabled={disabled}
           onChange={(e) => setFormData({ ...formData, name: e.target.value })}
@@ -639,19 +680,62 @@ function MenuItemForm({
         </Field>
       </div>
 
-      {hasSizes ? (
+      {selectedCategory && !categoryRequiresSizes ? (
+        <div className="flex items-center justify-between rounded-lg border border-border bg-muted/30 px-3 py-2">
+          <div className="space-y-0.5 pr-2">
+            <Label htmlFor={fieldId("sizesEnabled")}>Size-based pricing</Label>
+            <p className="text-xs text-muted-foreground">
+              Enable when this item uses small / medium / large / extra large prices 
+              {/* <code className="text-[10px]">sizes</code>), even if the category
+              is usually single-price. */}
+            </p>
+          </div>
+          <Switch
+            id={fieldId("sizesEnabled")}
+            disabled={disabled}
+            checked={formData.sizesEnabled}
+            onCheckedChange={(checked) =>
+              setFormData({
+                ...formData,
+                sizesEnabled: checked,
+                ...(checked
+                  ? {}
+                  : {
+                      price:
+                        formData.price.trim() ||
+                        formData.mediumPrice ||
+                        formData.smallPrice ||
+                        formData.largePrice ||
+                        formData.extraLargePrice ||
+                        "",
+                      smallPrice: "",
+                      mediumPrice: "",
+                      largePrice: "",
+                      extraLargePrice: "",
+                    }),
+              })
+            }
+          />
+        </div>
+      ) : null}
+
+      {showSizePricing ? (
         <div className="space-y-3">
           <FieldLabel>Size pricing</FieldLabel>
-          <div className="grid grid-cols-3 gap-3">
+          <p className="text-xs text-muted-foreground -mt-1">
+            Saved as JSON: small, medium (default), large, extra_large — sent in
+            multipart field <code className="text-[10px]">sizes</code>.
+          </p>
+          <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
             <Field>
               <FieldLabel
-                htmlFor="smallPrice"
+                htmlFor={fieldId("smallPrice")}
                 className="text-xs text-muted-foreground"
               >
                 Small ($)
               </FieldLabel>
               <Input
-                id="smallPrice"
+                id={fieldId("smallPrice")}
                 type="number"
                 step="0.01"
                 disabled={disabled}
@@ -664,13 +748,13 @@ function MenuItemForm({
             </Field>
             <Field>
               <FieldLabel
-                htmlFor="mediumPrice"
+                htmlFor={fieldId("mediumPrice")}
                 className="text-xs text-muted-foreground"
               >
                 Medium ($)
               </FieldLabel>
               <Input
-                id="mediumPrice"
+                id={fieldId("mediumPrice")}
                 type="number"
                 step="0.01"
                 disabled={disabled}
@@ -683,13 +767,13 @@ function MenuItemForm({
             </Field>
             <Field>
               <FieldLabel
-                htmlFor="largePrice"
+                htmlFor={fieldId("largePrice")}
                 className="text-xs text-muted-foreground"
               >
                 Large ($)
               </FieldLabel>
               <Input
-                id="largePrice"
+                id={fieldId("largePrice")}
                 type="number"
                 step="0.01"
                 disabled={disabled}
@@ -700,13 +784,32 @@ function MenuItemForm({
                 placeholder="0.00"
               />
             </Field>
+            <Field>
+              <FieldLabel
+                htmlFor={fieldId("extraLargePrice")}
+                className="text-xs text-muted-foreground"
+              >
+                Extra large ($)
+              </FieldLabel>
+              <Input
+                id={fieldId("extraLargePrice")}
+                type="number"
+                step="0.01"
+                disabled={disabled}
+                value={formData.extraLargePrice}
+                onChange={(e) =>
+                  setFormData({ ...formData, extraLargePrice: e.target.value })
+                }
+                placeholder="0.00"
+              />
+            </Field>
           </div>
         </div>
       ) : (
         <Field>
-          <FieldLabel htmlFor="price">Base price ($)</FieldLabel>
+          <FieldLabel htmlFor={fieldId("price")}>Base price ($)</FieldLabel>
           <Input
-            id="price"
+            id={fieldId("price")}
             type="number"
             step="0.01"
             disabled={disabled}
@@ -720,9 +823,9 @@ function MenuItemForm({
       )}
 
       <Field>
-        <FieldLabel htmlFor="description">Description</FieldLabel>
+        <FieldLabel htmlFor={fieldId("description")}>Description</FieldLabel>
         <Input
-          id="description"
+          id={fieldId("description")}
           disabled={disabled}
           value={formData.description}
           onChange={(e) =>
@@ -733,9 +836,9 @@ function MenuItemForm({
       </Field>
 
       <Field>
-        <FieldLabel htmlFor="imageUrl">Image URL</FieldLabel>
+        <FieldLabel htmlFor={fieldId("imageUrl")}>Image URL</FieldLabel>
         <Input
-          id="imageUrl"
+          id={fieldId("imageUrl")}
           type="text"
           disabled={disabled}
           value={formData.imageUrl}
@@ -747,9 +850,9 @@ function MenuItemForm({
       </Field>
 
       <Field>
-        <FieldLabel htmlFor="imageFile">Upload Image</FieldLabel>
+        <FieldLabel htmlFor={fieldId("imageFile")}>Upload Image</FieldLabel>
         <Input
-          id="imageFile"
+          id={fieldId("imageFile")}
           type="file"
           accept="image/*"
           disabled={disabled || !allowFileUpload}
@@ -757,8 +860,8 @@ function MenuItemForm({
         />
         <p className="mt-1 text-xs text-muted-foreground">
           {allowFileUpload
-            ? "For new items, the selected file is uploaded as multipart field `image`."
-            : "File upload is currently only supported while creating a new item."}
+            ? "Optional: choose a file to send as multipart field `image` (replaces image on edit)."
+            : ""}
         </p>
         {previewImageUrl ? (
           <div className="mt-2 relative h-28 w-28 overflow-hidden rounded-md border">
@@ -774,9 +877,9 @@ function MenuItemForm({
       </Field>
 
       <div className="flex items-center justify-between py-2">
-        <Label htmlFor="available">Available</Label>
+        <Label htmlFor={fieldId("available")}>Available</Label>
         <Switch
-          id="available"
+          id={fieldId("available")}
           disabled={disabled}
           checked={formData.available}
           onCheckedChange={(checked) =>

@@ -47,7 +47,8 @@ import { toast } from "@/hooks/use-toast"
 import { isUnauthorizedApiError } from "@/lib/api/client"
 import {
   apiCreateEmployee,
-  apiDeleteEmployee,
+  apiDeactivateEmployee,
+  apiPermanentDeleteEmployee,
   apiListEmployees,
   apiPatchEmployeeStatus,
   apiUpdateEmployee,
@@ -329,41 +330,32 @@ export default function EmployeesPage() {
     toast({ title: "Saved", description: "Employee was updated." })
   }
 
-  const handleDeleteEmployee = async () => {
+  const handleDeleteEmployee = async (mode: "deactivate" | "permanent") => {
     if (!deleteTarget) return
+    const empName = deleteTarget.name
     const targetId = deleteTarget.id
     setDeletePending(true)
     setActionError(null)
-    const res = await apiDeleteEmployee(targetId)
+    const res =
+      mode === "deactivate"
+        ? await apiDeactivateEmployee(targetId)
+        : await apiPermanentDeleteEmployee(targetId)
+    setDeletePending(false)
     if (!res.ok) {
-      if (isUnauthorizedApiError(res)) {
-        setDeletePending(false)
-        return
+      if (!isUnauthorizedApiError(res)) {
+        setActionError(res.message || "Request failed.")
       }
-      // Some environments expose only status transitions instead of hard delete.
-      const fallbackStatuses: Array<"active" | "inactive"> = ["inactive"]
-      let fallbackOk = false
-      for (const nextStatus of fallbackStatuses) {
-        const fallback = await apiPatchEmployeeStatus(targetId, nextStatus)
-        if (fallback.ok) {
-          fallbackOk = true
-          break
-        }
-      }
-      setDeletePending(false)
-      if (!fallbackOk) {
-        setActionError(res.message || "Unable to delete this employee.")
-        return
-      }
-      setDeleteTarget(null)
-      setEmployees((prev) => prev.filter((e) => e.id !== targetId))
-      toast({ title: "Saved", description: "Employee was deactivated." })
       return
     }
-    setDeletePending(false)
     setDeleteTarget(null)
-    setEmployees((prev) => prev.filter((e) => e.id !== targetId))
-    toast({ title: "Deleted", description: "Employee was removed." })
+    await refresh()
+    toast({
+      title: mode === "deactivate" ? "Deactivated" : "Deleted",
+      description:
+        mode === "deactivate"
+          ? `${empName} was deactivated.`
+          : `${empName} was permanently removed.`,
+    })
   }
 
   const resetForm = () => {
@@ -432,20 +424,48 @@ export default function EmployeesPage() {
         >
           <AlertDialogContent>
             <AlertDialogHeader>
-              <AlertDialogTitle>Delete employee?</AlertDialogTitle>
-              <AlertDialogDescription>
-                This action cannot be undone.{" "}
-                <span className="font-medium">{deleteTarget?.name ?? "Employee"}</span> will be removed.
+              <AlertDialogTitle>Deactivate or delete employee?</AlertDialogTitle>
+              <AlertDialogDescription asChild>
+                <div className="space-y-2 text-sm text-muted-foreground">
+                  <p>
+                    <span className="font-medium text-foreground">
+                      {deleteTarget?.name ?? "Employee"}
+                    </span>
+                  </p>
+                  {/* <p> */}
+                    {/* <strong className="text-foreground">Deactivate</strong> calls{" "}
+                    <code className="rounded bg-muted px-1 text-xs">
+                      DELETE /v1/employees/{"{id}"}
+                    </code> */}
+                    {/* . The record is deactivated (may still appear as inactive).
+                  </p>
+                  <p> */}
+                    {/* <strong className="text-foreground">Delete permanently</strong> calls{" "}
+                    <code className="rounded bg-muted px-1 text-xs">
+                      DELETE /v1/employees/{"{id}"}/permanent
+                    </code>
+                    . This cannot be undone.
+                  </p> */}
+                </div>
               </AlertDialogDescription>
             </AlertDialogHeader>
-            <AlertDialogFooter>
-              <AlertDialogCancel disabled={deletePending}>Cancel</AlertDialogCancel>
+            <AlertDialogFooter className="flex-col gap-2 sm:flex-row sm:justify-end">
+              <AlertDialogCancel disabled={deletePending} className="mt-0">
+                Cancel
+              </AlertDialogCancel>
+              <Button
+                variant="secondary"
+                disabled={deletePending}
+                onClick={() => void handleDeleteEmployee("deactivate")}
+              >
+                {deletePending ? "Working…" : "Deactivate"}
+              </Button>
               <Button
                 variant="destructive"
                 disabled={deletePending}
-                onClick={() => void handleDeleteEmployee()}
+                onClick={() => void handleDeleteEmployee("permanent")}
               >
-                {deletePending ? "Deleting..." : "Delete"}
+                {deletePending ? "Working…" : "Delete permanently"}
               </Button>
             </AlertDialogFooter>
           </AlertDialogContent>

@@ -1,5 +1,16 @@
 import type { ApiCategory, ApiMenuItem, ApiMenuSize } from '@/lib/api/menu'
 
+/** Must match backend `sizes[].size` for the fourth tier (see API / validation). */
+const API_SIZE_EXTRA_LARGE = 'extra_large' as const
+
+function parseMoneyField(raw: string | undefined | null): number | undefined {
+  if (raw == null) return undefined
+  const t = String(raw).trim().replace(',', '.')
+  if (t === '') return undefined
+  const n = Number.parseFloat(t)
+  return Number.isFinite(n) ? n : undefined
+}
+
 function toHttpUrlOrNull(raw: string): string | null {
   const v = raw.trim()
   if (!v) return null
@@ -23,7 +34,12 @@ export type MenuRow = {
   subcategoryName: string
   subcategory: { id: number | null; name: string }
   basePrice: number
-  sizes: { small?: number; medium?: number; large?: number } | null
+  sizes: {
+    small?: number
+    medium?: number
+    large?: number
+    extraLarge?: number
+  } | null
   available: boolean
   hasSizes: boolean
   raw: ApiMenuItem
@@ -33,30 +49,54 @@ export function parseSizesFromApi(sizes?: ApiMenuSize[] | null): {
   small?: number
   medium?: number
   large?: number
+  extraLarge?: number
 } | null {
   if (!sizes?.length) return null
-  const out: { small?: number; medium?: number; large?: number } = {}
+  const out: {
+    small?: number
+    medium?: number
+    large?: number
+    extraLarge?: number
+  } = {}
+  const isExtraLarge = (key: string) =>
+    key === 'xl' ||
+    key === 'xxl' ||
+    key === '2xl' ||
+    key === 'xlarge' ||
+    key.startsWith('xlarge') ||
+    key === 'extra_large' ||
+    key.replace(/\s+/g, '') === 'extralarge' ||
+    /^extra[\s_-]*large$/.test(key)
   for (const s of sizes) {
     const key = s.size.trim().toLowerCase()
     if (key === 's' || key.startsWith('small')) out.small = s.price
     else if (key === 'm' || key.startsWith('medium')) out.medium = s.price
+    else if (isExtraLarge(key)) out.extraLarge = s.price
     else if (key === 'l' || key.startsWith('large')) out.large = s.price
   }
   return Object.keys(out).length ? out : null
 }
 
-export function sizesPayloadFromForm(hasSizes: boolean, form: MenuFormValues): ApiMenuSize[] | undefined {
-  if (!hasSizes) return undefined
+/** Build API `sizes` array (multipart JSON). Extra tier uses snake_case like many PizzaHub payloads. */
+export function sizesPayloadFromForm(
+  useSizesPricing: boolean,
+  form: MenuFormValues,
+): ApiMenuSize[] | undefined {
+  if (!useSizesPricing) return undefined
   const out: ApiMenuSize[] = []
-  const s = parseFloat(form.smallPrice)
-  const m = parseFloat(form.mediumPrice)
-  const l = parseFloat(form.largePrice)
-  if (!Number.isNaN(s))
-    out.push({ size: 'Small', price: s, is_default: false })
-  if (!Number.isNaN(m))
-    out.push({ size: 'Medium', price: m, is_default: true })
-  if (!Number.isNaN(l))
-    out.push({ size: 'Large', price: l, is_default: false })
+  const s = parseMoneyField(form.smallPrice)
+  const m = parseMoneyField(form.mediumPrice)
+  const l = parseMoneyField(form.largePrice)
+  const xl = parseMoneyField(form.extraLargePrice ?? '')
+  if (s != null) out.push({ size: 'small', price: s, is_default: false })
+  if (m != null) out.push({ size: 'medium', price: m, is_default: true })
+  if (l != null) out.push({ size: 'large', price: l, is_default: false })
+  if (xl != null)
+    out.push({
+      size: API_SIZE_EXTRA_LARGE,
+      price: xl,
+      is_default: false,
+    })
   return out.length ? out : undefined
 }
 
@@ -64,10 +104,13 @@ export type MenuFormValues = {
   name: string
   categoryId: string
   subcategoryId: string
+  /** When category has_sizes is false; still send size variants via API sizes[]. */
+  sizesEnabled: boolean
   price: string
   smallPrice: string
   mediumPrice: string
   largePrice: string
+  extraLargePrice: string
   description: string
   imageUrl: string
   available: boolean
@@ -122,10 +165,12 @@ export function emptyMenuForm(defaultCategoryId: string): MenuFormValues {
     name: '',
     categoryId: defaultCategoryId,
     subcategoryId: 'none',
+    sizesEnabled: false,
     price: '',
     smallPrice: '',
     mediumPrice: '',
     largePrice: '',
+    extraLargePrice: '',
     description: '',
     imageUrl: '',
     available: true,
@@ -133,14 +178,23 @@ export function emptyMenuForm(defaultCategoryId: string): MenuFormValues {
 }
 
 export function menuRowToForm(row: MenuRow): MenuFormValues {
+  const hasVariantPrices =
+    row.sizes &&
+    (row.sizes.small != null ||
+      row.sizes.medium != null ||
+      row.sizes.large != null ||
+      row.sizes.extraLarge != null)
+
   return {
     name: row.name,
     categoryId: String(row.categoryId),
     subcategoryId: row.subcategoryId != null ? String(row.subcategoryId) : 'none',
-    price: row.sizes ? '' : row.basePrice.toString(),
+    sizesEnabled: row.hasSizes || Boolean(hasVariantPrices),
+    price: hasVariantPrices ? '' : row.basePrice.toString(),
     smallPrice: row.sizes?.small?.toString() ?? '',
     mediumPrice: row.sizes?.medium?.toString() ?? '',
     largePrice: row.sizes?.large?.toString() ?? '',
+    extraLargePrice: row.sizes?.extraLarge?.toString() ?? '',
     description: row.description,
     imageUrl: row.raw.image_url ?? '',
     available: row.available,
@@ -153,16 +207,22 @@ export function buildMenuItemPayload(
 ): Record<string, unknown> {
   const categoryId = Number(form.categoryId)
   const cat = categories.find((c) => c.id === categoryId)
-  const hasSizes = cat?.has_sizes === true
+  const categoryWantsSizes = cat?.has_sizes === true
+  const useSizesPricing = categoryWantsSizes || form.sizesEnabled
   const subId =
     form.subcategoryId && form.subcategoryId !== 'none'
       ? Number(form.subcategoryId)
       : null
 
-  const sizes = sizesPayloadFromForm(hasSizes, form)
-  const basePrice = hasSizes
-    ? Number.parseFloat(form.mediumPrice || form.smallPrice || form.largePrice || '0')
-    : Number.parseFloat(form.price || '0')
+  const sizes = sizesPayloadFromForm(useSizesPricing, form)
+  const basePrice = useSizesPricing
+    ? (parseMoneyField(form.mediumPrice) ??
+        parseMoneyField(form.smallPrice) ??
+        parseMoneyField(form.largePrice) ??
+        parseMoneyField(form.extraLargePrice) ??
+        parseMoneyField(form.price) ??
+        0)
+    : (parseMoneyField(form.price) ?? 0)
 
   const body: Record<string, unknown> = {
     name: form.name.trim(),
@@ -174,7 +234,7 @@ export function buildMenuItemPayload(
     is_available: form.available,
   }
 
-  if (hasSizes && sizes?.length) body.sizes = sizes
+  if (useSizesPricing && sizes?.length) body.sizes = sizes
 
   return body
 }

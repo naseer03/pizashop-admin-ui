@@ -120,8 +120,16 @@ export async function apiPatchEmployeeStatus(
   })
 }
 
-export async function apiDeleteEmployee(employeeId: number) {
+/** DELETE /v1/employees/{id} — deactivate employee (soft delete). */
+export async function apiDeactivateEmployee(employeeId: number) {
   return pizzaApiFetch<unknown>(`v1/employees/${employeeId}`, {
+    method: 'DELETE',
+  })
+}
+
+/** DELETE /v1/employees/{id}/permanent — permanently remove employee. */
+export async function apiPermanentDeleteEmployee(employeeId: number) {
+  return pizzaApiFetch<unknown>(`v1/employees/${employeeId}/permanent`, {
     method: 'DELETE',
   })
 }

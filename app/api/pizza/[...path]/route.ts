@@ -23,15 +23,23 @@ async function proxyToPizzaApi(
   if (accept) headers.set('accept', accept)
 
   const method = request.method
-  let body: string | undefined
+  const isMultipart = Boolean(incomingCt?.includes('multipart/form-data'))
+
+  let body: BodyInit | undefined
   if (!['GET', 'HEAD'].includes(method)) {
-    body = await request.text()
+    if (isMultipart) {
+      const buf = await request.arrayBuffer()
+      body = buf.byteLength ? buf : undefined
+    } else {
+      const text = await request.text()
+      body = text === '' ? undefined : text
+    }
   }
 
   const upstream = await fetch(url, {
     method,
     headers,
-    body: body === '' ? undefined : body,
+    body,
   })
 
   // 204/304 must not include a message body; forwarding "" as a body can confuse clients.

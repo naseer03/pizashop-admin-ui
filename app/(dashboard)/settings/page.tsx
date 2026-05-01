@@ -33,8 +33,8 @@ import {
   Pencil,
   Trash2,
   ChevronRight,
-  Cherry, 
-  Circle
+  Cherry,
+  Circle,
 } from "lucide-react"
 
 import {
@@ -117,10 +117,13 @@ interface Topping {
 interface Crust {
   id: string
   name: string
+  /** Menu `category_id` for POST/PUT `v1/crusts`. */
+  categoryId: number
+  categoryName?: string
   price: number
   available: boolean
 }
- 
+
 interface Subcategory {
   id: string
   name: string
@@ -262,9 +265,22 @@ function mapApiCrustToUi(raw: unknown): Crust | null {
     o.available ?? o.is_available ?? o.isAvailable ?? o.active ?? o.enabled
   const available = toBoolean(availableRaw) ?? true
 
+  let categoryId =
+    toFiniteNumber(o.category_id ?? o.categoryId) ?? null
+  if (categoryId == null && o.category && typeof o.category === "object") {
+    const cat = o.category as Record<string, unknown>
+    categoryId = toFiniteNumber(cat.id) ?? null
+  }
+  const categoryName =
+    o.category && typeof o.category === "object"
+      ? String((o.category as Record<string, unknown>).name ?? "").trim()
+      : ""
+
   return {
     id: String(id),
     name,
+    categoryId: categoryId ?? 0,
+    categoryName: categoryName || undefined,
     price,
     available,
   }
@@ -359,7 +375,11 @@ export default function SettingsPage() {
   const [crusts, setCrusts] = useState<Crust[]>([])
   const [crustDialogOpen, setCrustDialogOpen] = useState(false)
   const [editingCrust, setEditingCrust] = useState<Crust | null>(null)
-  const [crustForm, setCrustForm] = useState({ name: "", price: "" })
+  const [crustForm, setCrustForm] = useState({
+    name: "",
+    categoryId: "",
+    price: "",
+  })
   const [businessHours, setBusinessHours] = useState<BusinessHourRow[]>(() =>
     defaultBusinessHourRows(),
   )
@@ -781,13 +801,24 @@ export default function SettingsPage() {
   // Crust handlers
   const openAddCrust = () => {
     setEditingCrust(null)
-    setCrustForm({ name: "", price: "" })
+    setCrustForm({
+      name: "",
+      categoryId: categories[0]?.id ?? "",
+      price: "",
+    })
     setCrustDialogOpen(true)
   }
 
   const openEditCrust = (crust: Crust) => {
     setEditingCrust(crust)
-    setCrustForm({ name: crust.name, price: crust.price.toString() })
+    setCrustForm({
+      name: crust.name,
+      categoryId:
+        crust.categoryId > 0
+          ? String(crust.categoryId)
+          : categories[0]?.id ?? "",
+      price: crust.price.toString(),
+    })
     setCrustDialogOpen(true)
   }
 
@@ -796,12 +827,18 @@ export default function SettingsPage() {
     if (!name) return
     const priceNum = Number.parseFloat(crustForm.price || "0")
     if (!Number.isFinite(priceNum)) return
+    const categoryIdNum = Number.parseInt(crustForm.categoryId, 10)
+    if (!Number.isFinite(categoryIdNum) || categoryIdNum <= 0) {
+      setLoadError("Please select a menu category for this crust.")
+      return
+    }
 
     setCrustBusy(true)
     setLoadError(null)
 
     const payload = {
       name,
+      category_id: categoryIdNum,
       price: priceNum,
       is_available: editingCrust?.available ?? true,
       sort_order: 0,
@@ -839,8 +876,20 @@ export default function SettingsPage() {
       prev.map((c) => (c.id === id ? { ...c, available: nextAvailable } : c)),
     )
 
+    const categoryIdForApi =
+      current.categoryId > 0
+        ? current.categoryId
+        : Number.parseInt(categories[0]?.id ?? "0", 10)
+    if (!Number.isFinite(categoryIdForApi) || categoryIdForApi <= 0) {
+      setLoadError("Crust is missing category_id; edit the crust to assign a category.")
+      setCrustBusy(false)
+      await refreshCrusts()
+      return
+    }
+
     const res = await apiUpdateCrust(id, {
       name: current.name,
+      category_id: categoryIdForApi,
       price: current.price,
       is_available: nextAvailable,
       sort_order: 0,
@@ -1537,8 +1586,7 @@ export default function SettingsPage() {
             </Card>
           </TabsContent>
 
-          {/* Crusts */}
-          <TabsContent value="crusts">
+          <TabsContent value="crusts" className="space-y-6">
             <Card>
               <CardHeader>
                 <div className="flex items-center justify-between">
@@ -1547,7 +1595,7 @@ export default function SettingsPage() {
                       <Circle className="h-5 w-5 text-primary" />
                     </div>
                     <div>
-                      <CardTitle>Crust Options</CardTitle>
+                      <CardTitle>Crust options</CardTitle>
                       <CardDescription>
                         Manage crust types and additional charges
                       </CardDescription>
@@ -1555,7 +1603,7 @@ export default function SettingsPage() {
                   </div>
                   <Button onClick={openAddCrust}>
                     <Plus className="h-4 w-4 mr-2" />
-                    Add Crust
+                    Add crust
                   </Button>
                 </div>
               </CardHeader>
@@ -1569,6 +1617,14 @@ export default function SettingsPage() {
                       <div className="flex items-start justify-between">
                         <div>
                           <h4 className="font-medium">{crust.name}</h4>
+                          <p className="text-xs text-muted-foreground">
+                            {categories.find((c) => c.id === String(crust.categoryId))
+                              ?.name ??
+                              crust.categoryName ??
+                              (crust.categoryId > 0
+                                ? `Category #${crust.categoryId}`
+                                : "Category —")}
+                          </p>
                           <p className="text-sm text-muted-foreground">
                             {crust.price === 0 ? (
                               "No extra charge"
@@ -1801,7 +1857,9 @@ export default function SettingsPage() {
                 {editingCrust ? "Edit Crust" : "Add New Crust"}
               </DialogTitle>
               <DialogDescription>
-                {editingCrust ? "Update the crust details below." : "Add a new crust option with price."}
+                {editingCrust
+                  ? "Update name, menu category, and price."
+                  : "Add a crust with name, menu category_id, price, and availability."}
               </DialogDescription>
             </DialogHeader>
             <FieldGroup className="py-4">
@@ -1813,6 +1871,31 @@ export default function SettingsPage() {
                   onChange={(e) => setCrustForm({ ...crustForm, name: e.target.value })}
                   placeholder="e.g., Thin Crust, Deep Dish"
                 />
+              </Field>
+              <Field>
+                <FieldLabel htmlFor="crustCategoryId">Menu category</FieldLabel>
+                <Select
+                  value={crustForm.categoryId}
+                  onValueChange={(value) =>
+                    setCrustForm({ ...crustForm, categoryId: value })
+                  }
+                  disabled={!categories.length}
+                >
+                  <SelectTrigger id="crustCategoryId">
+                    <SelectValue placeholder="Select category" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {categories.map((c) => (
+                      <SelectItem key={c.id} value={c.id}>
+                        {c.name}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                <p className="mt-1 text-xs text-muted-foreground">
+                  Maps to <code className="text-[10px]">category_id</code> in the
+                  request body.
+                </p>
               </Field>
               <Field>
                 <FieldLabel htmlFor="crustPrice">Additional Price ($)</FieldLabel>
@@ -1832,7 +1915,11 @@ export default function SettingsPage() {
               </Button>
               <Button
                 onClick={() => void handleSaveCrust()}
-                disabled={crustBusy || !crustForm.name.trim()}
+                disabled={
+                  crustBusy ||
+                  !crustForm.name.trim() ||
+                  !crustForm.categoryId.trim()
+                }
               >
                 {editingCrust ? "Save Changes" : "Add Crust"}
               </Button>
