@@ -433,6 +433,14 @@ export default function MenuPage() {
                     </div>
                     {item.sizes ? (
                       <div className="flex flex-wrap items-center gap-2 text-sm">
+                        {item.sizes.half != null ? (
+                          <>
+                            <span className="text-muted-foreground">Half:</span>
+                            <span className="font-medium">
+                              ${item.sizes.half.toFixed(2)}
+                            </span>
+                          </>
+                        ) : null}
                         {item.sizes.small != null ? (
                           <>
                             <span className="text-muted-foreground">S:</span>
@@ -685,7 +693,7 @@ function MenuItemForm({
           <div className="space-y-0.5 pr-2">
             <Label htmlFor={fieldId("sizesEnabled")}>Size-based pricing</Label>
             <p className="text-xs text-muted-foreground">
-              Enable when this item uses small / medium / large / extra large prices 
+              Enable when this item uses half / small / medium / large / extra large prices 
               {/* <code className="text-[10px]">sizes</code>), even if the category
               is usually single-price. */}
             </p>
@@ -705,9 +713,11 @@ function MenuItemForm({
                         formData.price.trim() ||
                         formData.mediumPrice ||
                         formData.smallPrice ||
+                        formData.halfPrice ||
                         formData.largePrice ||
                         formData.extraLargePrice ||
                         "",
+                      halfPrice: "",
                       smallPrice: "",
                       mediumPrice: "",
                       largePrice: "",
@@ -723,10 +733,29 @@ function MenuItemForm({
         <div className="space-y-3">
           <FieldLabel>Size pricing</FieldLabel>
           <p className="text-xs text-muted-foreground -mt-1">
-            Saved as JSON: small, medium (default), large, extra_large — sent in
+            Saved as JSON: half, small, medium (default), large, extra_large — sent in
             multipart field <code className="text-[10px]">sizes</code>.
           </p>
-          <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+          <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-5">
+            <Field>
+              <FieldLabel
+                htmlFor={fieldId("halfPrice")}
+                className="text-xs text-muted-foreground"
+              >
+                Half ($)
+              </FieldLabel>
+              <Input
+                id={fieldId("halfPrice")}
+                type="number"
+                step="0.01"
+                disabled={disabled}
+                value={formData.halfPrice}
+                onChange={(e) =>
+                  setFormData({ ...formData, halfPrice: e.target.value })
+                }
+                placeholder="0.00"
+              />
+            </Field>
             <Field>
               <FieldLabel
                 htmlFor={fieldId("smallPrice")}

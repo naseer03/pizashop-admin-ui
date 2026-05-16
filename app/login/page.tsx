@@ -64,10 +64,10 @@ function LoginForm() {
           <CardTitle className="text-2xl font-bold tracking-tight">
             PizzaHub Admin
           </CardTitle>
-          <CardDescription>
+          {/* <CardDescription>
             Sign in with the email and password from your PizzaHub POS account. API:{' '}
             <span className="text-foreground">pizzaapi.lefruit.in</span>
-          </CardDescription>
+          </CardDescription> */}
         </CardHeader>
         <CardContent>
           <form onSubmit={handleSubmit} className="space-y-4">

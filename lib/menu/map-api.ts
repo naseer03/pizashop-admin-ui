@@ -2,6 +2,7 @@ import type { ApiCategory, ApiMenuItem, ApiMenuSize } from '@/lib/api/menu'
 
 /** Must match backend `sizes[].size` for the fourth tier (see API / validation). */
 const API_SIZE_EXTRA_LARGE = 'extra_large' as const
+const API_SIZE_HALF = 'half' as const
 
 function parseMoneyField(raw: string | undefined | null): number | undefined {
   if (raw == null) return undefined
@@ -35,6 +36,7 @@ export type MenuRow = {
   subcategory: { id: number | null; name: string }
   basePrice: number
   sizes: {
+    half?: number
     small?: number
     medium?: number
     large?: number
@@ -46,6 +48,7 @@ export type MenuRow = {
 }
 
 export function parseSizesFromApi(sizes?: ApiMenuSize[] | null): {
+  half?: number
   small?: number
   medium?: number
   large?: number
@@ -53,6 +56,7 @@ export function parseSizesFromApi(sizes?: ApiMenuSize[] | null): {
 } | null {
   if (!sizes?.length) return null
   const out: {
+    half?: number
     small?: number
     medium?: number
     large?: number
@@ -69,7 +73,8 @@ export function parseSizesFromApi(sizes?: ApiMenuSize[] | null): {
     /^extra[\s_-]*large$/.test(key)
   for (const s of sizes) {
     const key = s.size.trim().toLowerCase()
-    if (key === 's' || key.startsWith('small')) out.small = s.price
+    if (key === 'half' || key.startsWith('half')) out.half = s.price
+    else if (key === 's' || key.startsWith('small')) out.small = s.price
     else if (key === 'm' || key.startsWith('medium')) out.medium = s.price
     else if (isExtraLarge(key)) out.extraLarge = s.price
     else if (key === 'l' || key.startsWith('large')) out.large = s.price
@@ -84,10 +89,12 @@ export function sizesPayloadFromForm(
 ): ApiMenuSize[] | undefined {
   if (!useSizesPricing) return undefined
   const out: ApiMenuSize[] = []
+  const half = parseMoneyField(form.halfPrice)
   const s = parseMoneyField(form.smallPrice)
   const m = parseMoneyField(form.mediumPrice)
   const l = parseMoneyField(form.largePrice)
   const xl = parseMoneyField(form.extraLargePrice ?? '')
+  if (half != null) out.push({ size: API_SIZE_HALF, price: half, is_default: false })
   if (s != null) out.push({ size: 'small', price: s, is_default: false })
   if (m != null) out.push({ size: 'medium', price: m, is_default: true })
   if (l != null) out.push({ size: 'large', price: l, is_default: false })
@@ -107,6 +114,7 @@ export type MenuFormValues = {
   /** When category has_sizes is false; still send size variants via API sizes[]. */
   sizesEnabled: boolean
   price: string
+  halfPrice: string
   smallPrice: string
   mediumPrice: string
   largePrice: string
@@ -167,6 +175,7 @@ export function emptyMenuForm(defaultCategoryId: string): MenuFormValues {
     subcategoryId: 'none',
     sizesEnabled: false,
     price: '',
+    halfPrice: '',
     smallPrice: '',
     mediumPrice: '',
     largePrice: '',
@@ -180,7 +189,8 @@ export function emptyMenuForm(defaultCategoryId: string): MenuFormValues {
 export function menuRowToForm(row: MenuRow): MenuFormValues {
   const hasVariantPrices =
     row.sizes &&
-    (row.sizes.small != null ||
+    (row.sizes.half != null ||
+      row.sizes.small != null ||
       row.sizes.medium != null ||
       row.sizes.large != null ||
       row.sizes.extraLarge != null)
@@ -191,6 +201,7 @@ export function menuRowToForm(row: MenuRow): MenuFormValues {
     subcategoryId: row.subcategoryId != null ? String(row.subcategoryId) : 'none',
     sizesEnabled: row.hasSizes || Boolean(hasVariantPrices),
     price: hasVariantPrices ? '' : row.basePrice.toString(),
+    halfPrice: row.sizes?.half?.toString() ?? '',
     smallPrice: row.sizes?.small?.toString() ?? '',
     mediumPrice: row.sizes?.medium?.toString() ?? '',
     largePrice: row.sizes?.large?.toString() ?? '',
@@ -218,6 +229,7 @@ export function buildMenuItemPayload(
   const basePrice = useSizesPricing
     ? (parseMoneyField(form.mediumPrice) ??
         parseMoneyField(form.smallPrice) ??
+        parseMoneyField(form.halfPrice) ??
         parseMoneyField(form.largePrice) ??
         parseMoneyField(form.extraLargePrice) ??
         parseMoneyField(form.price) ??
