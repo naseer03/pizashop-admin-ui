@@ -10,13 +10,56 @@ function extractToppingsList(json: unknown): ApiTopping[] {
   if (direct.length) return direct
 
   const inner = unwrapApiData<unknown>(json) ?? json
-  return unwrapApiArray<ApiTopping>(inner)
+  const flat = unwrapApiArray<ApiTopping>(inner)
+  if (flat.length) return flat
+
+  if (inner && typeof inner === 'object') {
+    const o = inner as Record<string, unknown>
+    const grouped = o.categories
+    if (Array.isArray(grouped)) {
+      const out: ApiTopping[] = []
+      for (const cat of grouped) {
+        if (!cat || typeof cat !== 'object') continue
+        const catRec = cat as Record<string, unknown>
+        const parentCategoryId = catRec.id
+        const toppings = catRec.toppings
+        if (!Array.isArray(toppings)) continue
+        for (const t of toppings) {
+          if (!t || typeof t !== 'object') continue
+          const rec = { ...(t as ApiTopping) }
+          if (rec.category_id == null && parentCategoryId != null) {
+            rec.category_id = parentCategoryId
+          }
+          out.push(rec)
+        }
+      }
+      if (out.length) return out
+    }
+  }
+
+  return []
 }
 
-export async function apiListToppings():
+export type ListToppingsParams = {
+  category_id?: number
+  is_available?: boolean
+}
+
+export async function apiListToppings(
+  params: ListToppingsParams = {},
+): Promise<
   | { ok: true; data: ApiTopping[] }
-  | ApiFail {
-  const res = await pizzaApiFetch<unknown>('v1/toppings')
+  | ApiFail
+> {
+  const qs = new URLSearchParams()
+  if (params.category_id != null) {
+    qs.set('category_id', String(params.category_id))
+  }
+  if (params.is_available != null) {
+    qs.set('is_available', String(params.is_available))
+  }
+  const q = qs.toString()
+  const res = await pizzaApiFetch<unknown>(`v1/toppings${q ? `?${q}` : ''}`)
   if (!res.ok) return res
   return { ok: true, data: extractToppingsList(res.data) }
 }

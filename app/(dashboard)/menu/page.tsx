@@ -282,11 +282,11 @@ export default function MenuPage() {
             <h1 className="text-2xl font-bold text-foreground">
               Menu Management
             </h1>
-            <p className="text-muted-foreground">
+            {/* <p className="text-muted-foreground">
               Menu items from your PizzaHub API (
               <code className="text-xs">/v1/menu-items</code>,{" "}
               <code className="text-xs">/v1/categories</code>)
-            </p>
+            </p> */}
           </div>
           <Dialog
             open={isAddDialogOpen}
@@ -516,9 +516,9 @@ export default function MenuPage() {
                       <DialogContent className="max-w-lg">
                         <DialogHeader>
                           <DialogTitle>Edit Menu Item</DialogTitle>
-                          <DialogDescription>
+                          {/* <DialogDescription>
                             Updates via <code>PUT /v1/menu-items/{"{id}"}</code>.
-                          </DialogDescription>
+                          </DialogDescription> */}
                         </DialogHeader>
                         {actionError ? (
                           <p className="text-sm text-destructive" role="alert">
@@ -732,10 +732,10 @@ function MenuItemForm({
       {showSizePricing ? (
         <div className="space-y-3">
           <FieldLabel>Size pricing</FieldLabel>
-          <p className="text-xs text-muted-foreground -mt-1">
+          {/* <p className="text-xs text-muted-foreground -mt-1">
             Saved as JSON: half, small, medium (default), large, extra_large — sent in
             multipart field <code className="text-[10px]">sizes</code>.
-          </p>
+          </p> */}
           <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-5">
             <Field>
               <FieldLabel
