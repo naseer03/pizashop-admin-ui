@@ -62,7 +62,7 @@ export function RecentOrders() {
   return (
     <Card className="col-span-full">
       <CardHeader className="flex flex-row items-center justify-between">
-        <CardTitle className="text-lg font-semibold">Recent Orders</CardTitle>
+        <CardTitle className="text-lg font-semibold">Recent ooOrders</CardTitle>
         <Link href="/orders">
           <Button variant="outline" size="sm">
             View All
