@@ -1,6 +1,7 @@
 'use client'
 
 import { apiUrl } from '@/lib/api/config'
+import { parseApiErrorMessage } from '@/lib/api/error-message'
 import { clearDummySession, getAccessToken } from '@/lib/auth'
 
 type Json = Record<string, unknown>
@@ -29,6 +30,14 @@ function redirectToLoginForReauth() {
   window.location.assign(`/login${qs}`)
 }
 
+function isApiFailureBody(body: unknown): boolean {
+  return (
+    body != null &&
+    typeof body === 'object' &&
+    (body as Record<string, unknown>).success === false
+  )
+}
+
 /**
  * Call PizzaHub API through the same-origin `/api/pizza` proxy with Bearer auth when logged in.
  */
@@ -45,33 +54,60 @@ export async function pizzaApiFetch<T = Json>(
     headers.set('Authorization', `Bearer ${token}`)
   }
 
-  const res = await fetch(apiUrl(path), {
-    ...init,
-    headers,
-  })
+  const method = (init.method ?? 'GET').toUpperCase()
+  if (
+    !['GET', 'HEAD'].includes(method) &&
+    init.body != null &&
+    typeof init.body === 'string' &&
+    !headers.has('Content-Type')
+  ) {
+    headers.set('Content-Type', 'application/json')
+  }
+
+  let res: Response
+  try {
+    res = await fetch(apiUrl(path), {
+      ...init,
+      headers,
+    })
+  } catch {
+    return {
+      ok: false,
+      status: 0,
+      message:
+        'Could not reach the server. Check your connection and that the admin app is running.',
+    }
+  }
 
   if (res.status === 204 || res.status === 205 || res.status === 304) {
     return { ok: true, data: {} as T }
   }
 
   let body: unknown = null
-  try {
-    body = await res.json()
-  } catch {
-    body = null
+  const text = await res.text()
+  if (text) {
+    try {
+      body = JSON.parse(text) as unknown
+    } catch {
+      body = null
+    }
   }
+
+  const failMessage = parseApiErrorMessage(
+    body,
+    `Request failed (${res.status}).`,
+  )
 
   if (!res.ok) {
     if (res.status === 401) {
       redirectToLoginForReauth()
       return { ok: false, status: 401, message: '' }
     }
-    let message = `Request failed (${res.status}).`
-    if (body && typeof body === 'object' && 'error' in body) {
-      const err = (body as { error?: { message?: string } }).error
-      if (err?.message) message = err.message
-    }
-    return { ok: false, status: res.status, message }
+    return { ok: false, status: res.status, message: failMessage }
+  }
+
+  if (isApiFailureBody(body)) {
+    return { ok: false, status: res.status, message: failMessage }
   }
 
   return { ok: true, data: body as T }

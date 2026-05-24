@@ -1,0 +1,7 @@
+{
+  "name": "zero_cat_test",
+  "category_ids": [0],
+  "price": 20,
+  "is_available": true,
+  "sort_order": 0
+}

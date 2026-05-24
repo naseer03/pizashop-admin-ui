@@ -1,0 +1,7 @@
+{
+  "name": "bad_cat_test",
+  "category_ids": [99999],
+  "price": 20,
+  "is_available": true,
+  "sort_order": 0
+}

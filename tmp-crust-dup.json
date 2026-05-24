@@ -1,0 +1,7 @@
+{
+  "name": "sample_crust",
+  "category_ids": [16, 17],
+  "price": 20,
+  "is_available": true,
+  "sort_order": 0
+}

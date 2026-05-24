@@ -1,0 +1,8 @@
+{
+  "name": "both_fields_test",
+  "category_id": 16,
+  "category_ids": [16, 17],
+  "price": 20,
+  "is_available": true,
+  "sort_order": 0
+}

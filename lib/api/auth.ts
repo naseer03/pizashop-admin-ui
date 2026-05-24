@@ -1,4 +1,5 @@
 import { apiUrl } from '@/lib/api/config'
+import { parseApiErrorMessage } from '@/lib/api/error-message'
 
 export type LoginResult =
   | { ok: true; accessToken: string; refreshToken?: string }
@@ -52,19 +53,6 @@ function parseTokensFromJson(json: unknown): {
   return null
 }
 
-function errorMessageFromJson(json: unknown, fallback: string): string {
-  if (json && typeof json === 'object') {
-    const o = json as Record<string, unknown>
-    const err = o.error
-    if (err && typeof err === 'object' && 'message' in err) {
-      const m = (err as { message?: unknown }).message
-      if (typeof m === 'string' && m.length > 0) return m
-    }
-    if (typeof o.message === 'string' && o.message.length > 0) return o.message
-  }
-  return fallback
-}
-
 export async function loginWithEmailPassword(
   email: string,
   password: string,
@@ -88,7 +76,7 @@ export async function loginWithEmailPassword(
   if (!res.ok) {
     return {
       ok: false,
-      message: errorMessageFromJson(
+      message: parseApiErrorMessage(
         json,
         res.status === 401
           ? 'Invalid email or password.'
@@ -104,7 +92,7 @@ export async function loginWithEmailPassword(
   ) {
     return {
       ok: false,
-      message: errorMessageFromJson(json, 'Sign-in failed.'),
+      message: parseApiErrorMessage(json, 'Sign-in failed.'),
     }
   }
 

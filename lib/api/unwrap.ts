@@ -28,6 +28,9 @@ export function unwrapApiArray<T>(json: unknown): T[] {
     if (Array.isArray(d.items)) return d.items as T[]
     if (Array.isArray(d.data)) return d.data as T[]
     if (Array.isArray(d.results)) return d.results as T[]
+    if (Array.isArray(d.toppings)) return d.toppings as T[]
+    if (Array.isArray(d.orders)) return d.orders as T[]
+    if (Array.isArray(d.crusts)) return d.crusts as T[]
   }
   return []
 }

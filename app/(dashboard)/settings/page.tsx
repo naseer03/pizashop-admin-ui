@@ -1480,7 +1480,10 @@ export default function SettingsPage() {
                     <div>
                       <CardTitle>Pizza Toppings</CardTitle>
                       <CardDescription>
-                        Manage available toppings and their prices
+                        Loaded from{" "}
+                        <code className="text-xs">
+                          GET https://pizzaapi.lefruit.in/v1/toppings
+                        </code>
                       </CardDescription>
                     </div>
                   </div>
@@ -1610,7 +1613,10 @@ export default function SettingsPage() {
                     <div>
                       <CardTitle>Crust options</CardTitle>
                       <CardDescription>
-                        Manage crust types and additional charges
+                        Loaded from{" "}
+                        <code className="text-xs">
+                          GET https://pizzaapi.lefruit.in/v1/crusts
+                        </code>
                       </CardDescription>
                     </div>
                   </div>

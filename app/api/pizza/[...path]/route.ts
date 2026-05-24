@@ -3,6 +3,16 @@ import { getPizzaApiBaseUrl } from '@/lib/server/pizza-api-base'
 
 export const dynamic = 'force-dynamic'
 
+function proxyErrorResponse(message: string, status: number) {
+  return NextResponse.json(
+    {
+      success: false,
+      error: { code: 'PROXY_ERROR', message },
+    },
+    { status },
+  )
+}
+
 async function proxyToPizzaApi(
   request: NextRequest,
   pathSegments: string[],
@@ -36,13 +46,21 @@ async function proxyToPizzaApi(
     }
   }
 
-  const upstream = await fetch(url, {
-    method,
-    headers,
-    body,
-  })
+  let upstream: Response
+  try {
+    upstream = await fetch(url, {
+      method,
+      headers,
+      body,
+    })
+  } catch (err) {
+    const detail = err instanceof Error ? err.message : 'Network error'
+    return proxyErrorResponse(
+      `Failed to reach Pizza API at ${base}. ${detail}`,
+      502,
+    )
+  }
 
-  // 204/304 must not include a message body; forwarding "" as a body can confuse clients.
   if (upstream.status === 204 || upstream.status === 304) {
     return new NextResponse(null, { status: upstream.status })
   }
